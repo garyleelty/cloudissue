@@ -2,7 +2,7 @@
  * 全局状态与极简发布订阅。
  * 视图只订阅 onChange，不直接互相调用，避免渲染与交互逻辑互相纠缠。
  */
-import { STATUSES } from '/shared/constants.js';
+import { STATUSES } from '../../shared/constants.js';
 
 /**
  * @typedef {Object} BoardState

@@ -2,7 +2,7 @@
  * 筛选下拉（多选）的渲染与交互。
  */
 import { state, notify } from './state.js';
-import { PRIORITIES, PRIORITY_LABELS } from '/shared/constants.js';
+import { PRIORITIES, PRIORITY_LABELS } from '../../shared/constants.js';
 import { esc } from './utils.js';
 
 const $ = (sel) => document.querySelector(sel);

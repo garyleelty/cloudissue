@@ -1,9 +1,14 @@
 /**
  * 弹窗层：新建/编辑表单、删除二次确认、失败原因填写。
+ *
+ * 取表单控件统一走 form.elements.namedItem(name)，
+ * 而不是 form[name] —— 后者依赖 HTMLFormElement 的命名属性访问，
+ * 在不同运行时（jsdom / 各浏览器）下行为并不完全一致。
  */
 import { state } from './state.js';
 import { api } from './api.js';
-import { STATUSES, STATUS_LABELS, FAIL_STATUS } from '/shared/constants.js';
+import { toast } from './toast.js';
+import { STATUSES, STATUS_LABELS, FAIL_STATUS } from '../../shared/constants.js';
 import { esc } from './utils.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -20,6 +25,9 @@ let onChanged = async () => {};
 let pendingDelete = null;
 /** @type {((v: string | null) => void) | null} */
 let reasonResolver = null;
+
+/** 取表单字段元素 @param {string} name */
+const field = (name) => issueForm.elements.namedItem(name);
 
 export function openModal(which) {
   modalRoot.hidden = false;
@@ -41,9 +49,10 @@ export function showFormError(msg) {
   el.hidden = !msg;
 }
 
-/** 生成状态下拉选项（此前 index.html 中为空，没有任何代码填充） */
+/** 填充状态下拉选项；此前 index.html 中该 select 为空且无人填充 */
 export function populateStatusOptions() {
-  const select = issueForm.status;
+  const select = field('status');
+  if (!select) return;
   select.innerHTML = STATUSES.map(
     (s) => `<option value="${esc(s)}">${esc(STATUS_LABELS[s])}</option>`
   ).join('');
@@ -59,19 +68,18 @@ export function openForm(issue = null, presetStatus = null) {
   $('#formTitle').textContent = issue ? '编辑任务' : '新建任务';
   showFormError('');
 
-  const f = issueForm;
-  f.title.value = issue?.title ?? '';
-  f.description.value = issue?.description ?? '';
-  f.priority.value = issue?.priority ?? 'medium';
-  f.assignee.value = issue?.assignee ?? '';
-  f.status.value = issue?.status ?? presetStatus ?? 'backlog';
-  f.dueDate.value = issue?.dueDate ?? '';
-  f.tags.value = (issue?.tags ?? []).join(', ');
-  f.failReason.value = '';
+  field('title').value = issue?.title ?? '';
+  field('description').value = issue?.description ?? '';
+  field('priority').value = issue?.priority ?? 'medium';
+  field('assignee').value = issue?.assignee ?? '';
+  field('status').value = issue?.status ?? presetStatus ?? 'backlog';
+  field('dueDate').value = issue?.dueDate ?? '';
+  field('tags').value = (issue?.tags ?? []).join(', ');
+  field('failReason').value = '';
 
   syncReasonVisibility();
   openModal(modalForm);
-  setTimeout(() => f.title.focus(), 60);
+  setTimeout(() => field('title').focus(), 60);
 }
 
 /**
@@ -83,56 +91,57 @@ export function syncReasonVisibility() {
   const editing = state.editingId
     ? state.issues.find((i) => i.id === state.editingId)
     : null;
-  const isFailed = issueForm.status.value === FAIL_STATUS;
+  const statusEl = field('status');
+  const reasonEl = field('failReason');
+  if (!statusEl || !reasonEl) return false;
+
+  const isFailed = statusEl.value === FAIL_STATUS;
   const needReason = isFailed && (!editing || editing.status !== FAIL_STATUS);
 
   $('#reasonRow').hidden = !needReason;
-  issueForm.failReason.required = needReason;
+  reasonEl.required = needReason;
   return needReason;
 }
 
 async function submitForm(e) {
   e.preventDefault();
-  const f = e.target;
 
-  const title = f.title.value.trim();
+  const title = field('title').value.trim();
   if (!title) {
     showFormError('请填写任务标题');
-    f.title.focus();
+    field('title').focus();
     return;
   }
 
   const needReason = syncReasonVisibility();
-  const reason = f.failReason.value.trim();
+  const reason = field('failReason').value.trim();
   if (needReason && !reason) {
     showFormError('状态为「失败」时必须填写失败原因，否则无法保存');
-    f.failReason.focus();
+    field('failReason').focus();
     return;
   }
 
   const payload = {
     title,
-    description: f.description.value.trim(),
-    priority: f.priority.value,
-    assignee: f.assignee.value.trim(),
-    tags: f.tags.value,
-    dueDate: f.dueDate.value || null,
-    status: f.status.value,
+    description: field('description').value.trim(),
+    priority: field('priority').value,
+    assignee: field('assignee').value.trim(),
+    tags: field('tags').value,
+    dueDate: field('dueDate').value || null,
+    status: field('status').value,
     failReason: reason,
   };
 
   try {
     if (state.editingId) {
       await api.update(state.editingId, payload);
-      closeModals();
-      await onChanged();
       toast('任务已更新', 'success');
     } else {
       await api.create(payload);
-      closeModals();
-      await onChanged();
       toast('任务已创建', 'success');
     }
+    closeModals();
+    await onChanged();
   } catch (err) {
     showFormError(err.message);
   }
@@ -197,7 +206,7 @@ export function initModals(callbacks = {}) {
 
   issueForm.addEventListener('submit', submitForm);
 
-  issueForm.status.addEventListener('change', () => {
+  field('status').addEventListener('change', () => {
     syncReasonVisibility();
     showFormError('');
   });

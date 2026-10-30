@@ -15,7 +15,7 @@ import {
   cancelPendingReason,
   hasPendingReason,
 } from './modals.js';
-import { STATUSES } from '/shared/constants.js';
+import { STATUSES } from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');

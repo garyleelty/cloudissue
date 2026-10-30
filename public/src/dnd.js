@@ -8,7 +8,7 @@ import { state } from './state.js';
 import { api } from './api.js';
 import { toast } from './toast.js';
 import { askFailureReason } from './modals.js';
-import { FAIL_STATUS, STATUS_LABELS } from '/shared/constants.js';
+import { FAIL_STATUS, STATUS_LABELS } from '../../shared/constants.js';
 
 const board = document.querySelector('#board');
 

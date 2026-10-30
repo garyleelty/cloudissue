@@ -398,6 +398,10 @@ button, input, select, textarea {
   background: var(--surface-sunken);
   border-radius: var(--r-lg);
   border: 2px dashed transparent;
+  /* 把列内布局变化隔离在列内，避免波及整块看板重排。
+     注意：不能用 paint 或 content-visibility，否则会裁掉卡片阴影、
+     且卡片高度不定时会出现跳动。 */
+  contain: layout style;
   transition: background 0.2s var(--ease), border-color 0.2s var(--ease),
               box-shadow 0.2s var(--ease);
 }
@@ -477,6 +481,8 @@ button, input, select, textarea {
   padding: 12px 13px;
   box-shadow: var(--sh-1);
   cursor: grab;
+  /* 卡片内容变化不影响外部布局，减少重排范围 */
+  contain: layout style;
   transition: box-shadow 0.2s var(--ease), transform 0.2s var(--ease), opacity 0.2s var(--ease);
 }
 

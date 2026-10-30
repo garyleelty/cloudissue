@@ -9,7 +9,7 @@
 import { state } from './state.js';
 import { filteredIssues, hasActiveFilters } from './filters.js';
 import { esc, fmtDateTime, dueInfo } from './utils.js';
-import { STATUSES, STATUS_LABELS, PRIORITY_LABELS } from '/shared/constants.js';
+import { STATUSES, STATUS_LABELS, PRIORITY_LABELS } from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
