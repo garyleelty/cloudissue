@@ -1,0 +1,26 @@
+{
+  "name": "cloudissue",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "网页版任务看板 Issue Board - 五列看板 / 拖拽流转 / 失败原因必填 / MySQL + MCP 持久化",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "mcp": "node mcp-server/index.js",
+    "test": "node tests/integration.mjs",
+    "test:mcp": "node tests/mcp-smoke.mjs",
+    "db:up": "docker compose up -d mysql",
+    "db:down": "docker compose down"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mysql2": "^3.12.0",
+    "zod": "^3.24.1"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
+}
