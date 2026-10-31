@@ -225,6 +225,24 @@ const needReason2 = modals.syncReasonVisibility();
 check('选为非失败时不要求原因', needReason2 === false);
 check('失败原因行隐藏', $('#reasonRow').hidden === true);
 
+console.log('\n--- 10. 乐观更新与回滚 ---');
+const dnd = await import('../public/src/dnd.js');
+const inCol = (status, id) =>
+  Boolean(document.querySelector(`.column[data-status="${status}"] .card[data-id="${id}"]`));
+
+check('移动前卡片在进行中列', inCol('in_progress', 1));
+const snap = dnd.applyMoveOptimistic(1, 'done', null);
+check('乐观更新返回了回滚快照', Array.isArray(snap) && snap.length === 5, String(snap && snap.length));
+check('无需往返即可看到卡片落在目标列', inCol('done', 1));
+check('原列不再有该卡片', inCol('in_progress', 1) === false);
+check('卡片总数未变（无重复节点）', cardCount() === 5, String(cardCount()));
+
+s.issues = snap;
+notify();
+check('回滚后卡片回到原列', inCol('in_progress', 1));
+check('回滚后目标列不再有该卡片', inCol('done', 1) === false);
+check('回滚后卡片总数仍为 5', cardCount() === 5, String(cardCount()));
+
 console.log(`\n=====================================`);
 console.log(`  UI 冒烟：通过 ${pass} 项，失败 ${fail} 项`);
 console.log(`=====================================\n`);

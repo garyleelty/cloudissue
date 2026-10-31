@@ -3,8 +3,11 @@
  *
  * 依赖注入说明：initDnd 接收 onChanged 回调，而不是直接 import 视图模块，
  * 这样「拖拽 → 数据 → 重绘」是单向的，不会出现拖拽与渲染互相依赖的环。
+ *
+ * 落位后先乐观更新本地状态（即时反馈），再提交服务端；
+ * 失败则用快照回滚，并由 onChanged 重新拉取服务端数据兜底。
  */
-import { state } from './state.js';
+import { state, notify } from './state.js';
 import { api } from './api.js';
 import { toast } from './toast.js';
 import { askFailureReason } from './modals.js';
@@ -57,6 +60,51 @@ function afterIdFromPlaceholder() {
   return prev ? Number(prev.dataset.id) : null;
 }
 
+/**
+ * 造一份回滚快照。
+ * 只浅拷贝卡片本身即可：乐观更新只改 status 与数组顺序，
+ * 不会动 logs / tags，所以不存在共享引用被写坏的问题。
+ * @returns {any[]}
+ */
+function snapshotIssues() {
+  return state.issues.map((i) => ({ ...i }));
+}
+
+/**
+ * 乐观应用一次移动：立刻改本地状态并重绘，不等服务端往返。
+ *
+ * 排序语义与服务端保持一致：state.issues 的全局顺序只在「同一 status 分组内」
+ * 有意义（render.js 逐列 filter），所以只要把卡片插到 afterId 之后即可；
+ * afterId 为空则插到目标列之首。
+ *
+ * @param {number} id
+ * @param {string} toStatus
+ * @param {number | null} afterId
+ * @returns {any[] | null} 回滚快照；卡片不存在时返回 null
+ */
+export function applyMoveOptimistic(id, toStatus, afterId) {
+  const moving = state.issues.find((i) => i.id === id);
+  if (!moving) return null;
+
+  const snapshot = snapshotIssues();
+  const rest = state.issues.filter((i) => i.id !== id);
+
+  let at = -1;
+  if (afterId == null) {
+    at = rest.findIndex((i) => i.status === toStatus);
+  } else {
+    const afterIdx = rest.findIndex((i) => i.id === afterId);
+    at = afterIdx >= 0 ? afterIdx + 1 : -1;
+  }
+
+  if (at < 0) rest.push({ ...moving, status: toStatus });
+  else rest.splice(at, 0, { ...moving, status: toStatus });
+
+  state.issues = rest;
+  notify();
+  return snapshot;
+}
+
 async function performMove(drag, toStatus, afterId) {
   const issue = state.issues.find((i) => i.id === drag.id);
   if (!issue) return;
@@ -64,6 +112,7 @@ async function performMove(drag, toStatus, afterId) {
   let failReason = '';
   const needsReason = toStatus === FAIL_STATUS && drag.fromStatus !== FAIL_STATUS;
 
+  // 原因闸门在乐观更新之前：拿不到原因就不该产生任何本地变化
   if (needsReason) {
     const reason = await askFailureReason(issue);
     if (!reason) {
@@ -73,10 +122,18 @@ async function performMove(drag, toStatus, afterId) {
     failReason = reason;
   }
 
+  const snapshot = applyMoveOptimistic(drag.id, toStatus, afterId);
+
   try {
     await api.move(drag.id, { toStatus, afterId, failReason });
     toast(`已移动到「${STATUS_LABELS[toStatus]}」`, 'success');
   } catch (err) {
+    // 先用快照即时回滚，再靠 finally 拉一次服务端数据兜底，
+    // 避免并发移动时把别人已提交的改动一起回滚掉
+    if (snapshot) {
+      state.issues = snapshot;
+      notify();
+    }
     toast(err.message, 'error');
   } finally {
     await onChanged();
