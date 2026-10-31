@@ -1,6 +1,10 @@
 /**
  * REST API 封装。所有请求最终都会经由服务端转发到 MCP 数据服务。
+ *
+ * 这里是写操作的唯一收口，所以「通知其他标签页」挂在成功的非 GET 请求上，
+ * 不必在每个调用点（新建 / 编辑 / 删除 / 移动）各写一遍。
  */
+import { bumpRevision } from './sync.js';
 
 async function request(url, options = {}) {
   const res = await fetch(url, {
@@ -16,6 +20,10 @@ async function request(url, options = {}) {
   }
 
   if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`);
+
+  const method = (options.method || 'GET').toUpperCase();
+  if (method !== 'GET') bumpRevision();
+
   return data;
 }
 

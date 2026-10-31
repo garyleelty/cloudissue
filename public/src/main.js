@@ -7,6 +7,7 @@ import { toast } from './toast.js';
 import * as render from './render.js';
 import { syncDropdowns, closeAllDropdowns } from './dropdowns.js';
 import { initDnd } from './dnd.js';
+import { initCrossTabSync } from './sync.js';
 import {
   initModals,
   openForm,
@@ -144,6 +145,7 @@ async function init() {
   render.buildSkeleton();
   initDnd({ onChanged: load });
   initModals({ onChanged: load });
+  initCrossTabSync(load);
   bindGlobalEvents();
 
   onChange(() => render.renderBoard());

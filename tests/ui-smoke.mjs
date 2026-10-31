@@ -243,6 +243,49 @@ check('回滚后卡片回到原列', inCol('in_progress', 1));
 check('回滚后目标列不再有该卡片', inCol('done', 1) === false);
 check('回滚后卡片总数仍为 5', cardCount() === 5, String(cardCount()));
 
+console.log('\n--- 11. 跨标签页同步 ---');
+const sync = await import('../public/src/sync.js');
+
+// 统计看板拉取次数，用来判断是否真的重新拉了数据
+let listCalls = 0;
+const origFetch = globalThis.fetch;
+globalThis.fetch = async (url, opts) => {
+  if (String(url).includes('/api/issues')) listCalls += 1;
+  return origFetch(url, opts);
+};
+window.fetch = globalThis.fetch;
+
+window.localStorage.removeItem('issue-board:rev');
+sync.bumpRevision();
+check('写库成功后写出修订号', window.localStorage.getItem('issue-board:rev') !== null);
+
+const callsBeforeEvent = listCalls;
+const storageEvent = new window.Event('storage');
+storageEvent.key = 'issue-board:rev';
+window.dispatchEvent(storageEvent);
+await wait(200);
+check(
+  '收到其他标签页的变更通知后自动刷新',
+  listCalls > callsBeforeEvent,
+  `${callsBeforeEvent} -> ${listCalls}`
+);
+
+const callsBeforeUnrelated = listCalls;
+const otherEvent = new window.Event('storage');
+otherEvent.key = 'some-unrelated-key';
+window.dispatchEvent(otherEvent);
+await wait(200);
+check('无关 key 不触发刷新', listCalls === callsBeforeUnrelated, `${callsBeforeUnrelated} -> ${listCalls}`);
+
+const callsBeforeVisible = listCalls;
+document.dispatchEvent(new window.Event('visibilitychange'));
+await wait(200);
+check(
+  '切回前台时兜底刷新一次',
+  listCalls > callsBeforeVisible,
+  `${callsBeforeVisible} -> ${listCalls}`
+);
+
 console.log(`\n=====================================`);
 console.log(`  UI 冒烟：通过 ${pass} 项，失败 ${fail} 项`);
 console.log(`=====================================\n`);
