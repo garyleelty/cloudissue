@@ -52,8 +52,11 @@ utils / toast / api / state / filters / dropdowns / render / dnd / modals / sync
 ```bash
 npm run test:mcp   # MCP 传输 + 工具注册冒烟
 npm test           # 端到端集成测试（32 项断言），需先启动服务 + MySQL
-npm run test:ui    # UI 冒烟（jsdom，26 项），不需服务与数据库
+npm run test:ui    # UI 冒烟（jsdom，38 项），不需服务与数据库
 ```
+
+> UI 冒烟里第 10 组（乐观更新/回滚）与第 11 组（跨标签页同步）用 `wait(200)` 等异步，
+> 改动 debounce 或 reload 时序时要留意这里的等待时长。
 
 > 三套都要跑。API 测试覆盖不到 UI 层——状态下拉为空的缺陷就是证据。
 
@@ -62,3 +65,6 @@ npm run test:ui    # UI 冒烟（jsdom，26 项），不需服务与数据库
 - Docker Hub 不可达 → `docker compose up` 会失败，别再试。
 - Homebrew 被沙箱挡住 → `brew install` 装不了 MySQL。
 - 可行方案：`curl` 走 `127.0.0.1:51425` 代理下载 MySQL 官方 tarball 解压运行。
+- 上一轮的 dev server 常驻占着 5173，新起服务会 `EADDRINUSE`。
+  先 `pkill -f "node server/index.js"` 再 `pkill -f "mcp-server/index.js"`。
+  注意 `pkill -f "server/index.js"` 会**连带匹配到 `mcp-server/index.js`**，要分开杀。
