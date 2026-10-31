@@ -27,13 +27,35 @@
 - 示例数据仅当 `issues` 表为空时写入，由 `board_meta.seeded_at` 兜底，
   任何"初始化"逻辑都不得覆盖已有用户数据。
 - 标签既接受数组也接受逗号/空格分隔字符串，统一走 `normalizeTags()`（trim/截断 48/去重/去空）。
+- 拖拽是**乐观更新**的：落位先改本地 state，失败再用快照回滚 + 拉服务端兜底。
+  改这条时注意：失败原因闸门必须在乐观更新**之前**，否则取消填原因卡片已经跑掉了。
+- 跨标签页同步靠 localStorage 修订号（`sync.js`）+ storage 事件。
+  修订号统一挂 `api.js` 的 `request()`（成功非 GET），不要在调用点各写一遍。
+
+## 前端结构（已拆分，勿退回巨石文件）
+
+`public/src/` 下按职责拆分为：
+utils / toast / api / state / filters / dropdowns / render / dnd / modals / sync / main
+
+- 数据流单向：`事件 → 改 state → notify() → renderBoard()`
+- `dnd` 与 `modals` / `sync` 通过注入回调通信，避免循环依赖
+- `state.issues` 的全局顺序**只在「同一 status 分组内」有意义**（render 逐列 filter），
+  所以本地重排只需把卡片插到 afterId 之后，不必维护全局序号
+- 取表单控件用 `form.elements.namedItem(name)`，别用 `form[name]`
+  （后者依赖命名属性访问，jsdom 与各浏览器行为不一致）
+- 卡片按 id 复用节点 + 数据签名，排序变化只做 DOM 移动
+- 模块导入常量一律用相对路径 `../../shared/constants.js`，
+  绝对路径 `/shared/...` 在 Node ESM 下无法解析
 
 ## 测试
 
 ```bash
 npm run test:mcp   # MCP 传输 + 工具注册冒烟
-npm test           # 端到端集成测试（32 项断言），需先启动服务
+npm test           # 端到端集成测试（32 项断言），需先启动服务 + MySQL
+npm run test:ui    # UI 冒烟（jsdom，26 项），不需服务与数据库
 ```
+
+> 三套都要跑。API 测试覆盖不到 UI 层——状态下拉为空的缺陷就是证据。
 
 ## 环境坑（已踩过）
 
