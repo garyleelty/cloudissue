@@ -121,6 +121,10 @@ async function submitForm(e) {
     return;
   }
 
+  const editing = state.editingId
+    ? state.issues.find((i) => i.id === state.editingId)
+    : null;
+
   const payload = {
     title,
     description: field('description').value.trim(),
@@ -131,6 +135,9 @@ async function submitForm(e) {
     status: field('status').value,
     failReason: reason,
   };
+
+  // 乐观锁：把「打开表单时看到的版本号」带回服务端，被别人改过就拒绝提交
+  if (editing && editing.version != null) payload.expectedVersion = editing.version;
 
   try {
     if (state.editingId) {
@@ -143,6 +150,8 @@ async function submitForm(e) {
     closeModals();
     await onChanged();
   } catch (err) {
+    // 冲突时先把最新数据拉回来，用户重试即可覆盖，不用手动刷新页面
+    if (err.status === 409) await onChanged();
     showFormError(err.message);
   }
 }

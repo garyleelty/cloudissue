@@ -107,6 +107,15 @@ app.post('/api/issues', asyncHandler(async (req, res) => {
   res.status(201).json(data);
 }));
 
+/** 乐观锁冲突：MCP 返回 conflict 时统一映射为 409（校验仍留在 MCP 内） */
+const conflictResponse = (res, data) =>
+  res.status(409).json({
+    error: data.message || '任务已被其他人修改，请刷新后重试',
+    conflict: true,
+    currentVersion: data.currentVersion,
+    issue: data.issue,
+  });
+
 /** 更新任务字段 */
 app.put('/api/issues/:id', asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
@@ -114,6 +123,7 @@ app.put('/api/issues/:id', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: '非法的任务 ID' });
   }
   const data = await callTool('issue_update', { ...(req.body || {}), id });
+  if (data.conflict) return conflictResponse(res, data);
   res.json(data);
 }));
 
@@ -124,6 +134,7 @@ app.post('/api/issues/:id/move', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: '非法的任务 ID' });
   }
   const data = await callTool('issue_move', { ...(req.body || {}), id });
+  if (data.conflict) return conflictResponse(res, data);
   res.json(data);
 }));
 

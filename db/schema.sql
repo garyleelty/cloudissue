@@ -22,12 +22,28 @@ CREATE TABLE IF NOT EXISTS `issues` (
   `due_date`     DATE            NULL                    COMMENT '截止日期，可为空',
   `status`       ENUM('backlog','planning','in_progress','done','failed') NOT NULL DEFAULT 'backlog' COMMENT '状态：未规划/规划中/进行中/已完成/失败',
   `position`     INT             NOT NULL DEFAULT 0      COMMENT '同列内排序位，越小越靠前',
+  `version`      INT UNSIGNED    NOT NULL DEFAULT 1      COMMENT '乐观锁版本号，每次更新 +1',
   `created_at`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (`id`),
   KEY `idx_issues_status_pos` (`status`, `position`),
   KEY `idx_issues_updated` (`updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务卡片';
+
+-- 幂等补列：历史库缺 `version` 时自动补上。
+-- MySQL 不支持 ADD COLUMN IF NOT EXISTS，因此用 information_schema 判断后
+-- 走 PREPARE 执行；列已存在时执行空语句，重复运行无副作用。
+SET @ci_ddl := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'issues'
+       AND COLUMN_NAME = 'version') = 0,
+  'ALTER TABLE `issues` ADD COLUMN `version` INT UNSIGNED NOT NULL DEFAULT 1 COMMENT ''乐观锁版本号，每次更新 +1'' AFTER `position`',
+  'DO 0'
+);
+PREPARE ci_stmt FROM @ci_ddl;
+EXECUTE ci_stmt;
+DEALLOCATE PREPARE ci_stmt;
 
 -- ------------------------------------------------------------
 -- 2. 标签表（一个任务可有多个标签）

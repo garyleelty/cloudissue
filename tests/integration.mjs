@@ -137,6 +137,45 @@ async function main() {
   const badStatus = await post('/api/issues', { title: '非法状态', status: 'unknown_status' });
   check('非法状态被拒绝', badStatus.status === 400, JSON.stringify(badStatus.data));
 
+  console.log('\n--- 11. 乐观并发控制（version） ---');
+  const { data: vList } = await api('/api/issues');
+  const any = vList.issues[0];
+  check('列表返回版本号', Number.isInteger(any.version), String(any.version));
+
+  const okUpd = await put(`/api/issues/${any.id}`, {
+    title: `${any.title}·v1`,
+    expectedVersion: any.version,
+  });
+  check('版本号一致时更新成功', okUpd.status === 200, JSON.stringify(okUpd.data));
+  check('更新后版本号 +1', okUpd.data.issue.version === any.version + 1, String(okUpd.data.issue && okUpd.data.issue.version));
+
+  const staleUpd = await put(`/api/issues/${any.id}`, {
+    title: `${any.title}·过期`,
+    expectedVersion: any.version,
+  });
+  check('版本号过期时更新返回 409', staleUpd.status === 409, JSON.stringify(staleUpd.data));
+  check('冲突提示说明原因', /已被其他人修改/.test(staleUpd.data.error || ''), staleUpd.data.error);
+  check('冲突响应带回当前版本号', staleUpd.data.currentVersion === any.version + 1, String(staleUpd.data.currentVersion));
+
+  const staleMove = await post(`/api/issues/${any.id}/move`, {
+    toStatus: any.status,
+    expectedVersion: any.version,
+  });
+  check('版本号过期时移动被拒绝', staleMove.status === 409, JSON.stringify(staleMove.data));
+
+  const cur = await getIssue(any.id);
+  const okMove = await post(`/api/issues/${any.id}/move`, {
+    toStatus: any.status,
+    afterId: null,
+    expectedVersion: cur.version,
+  });
+  check('版本号一致时移动成功', okMove.status === 200 && okMove.data.moved === true, JSON.stringify(okMove.data));
+
+  // 复原现场：清掉本组改动，避免污染后续轮次的示例数据
+  await put(`/api/issues/${any.id}`, { title: any.title });
+  const restored = await getIssue(any.id);
+  check('冲突未覆盖他人改动（标题仍是最新值）', restored.title !== `${any.title}·过期`, restored.title);
+
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
   console.log(`=====================================\n`);

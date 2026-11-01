@@ -286,6 +286,40 @@ check(
   `${callsBeforeVisible} -> ${listCalls}`
 );
 
+console.log('\n--- 12. 乐观并发控制（前端） ---');
+{
+  const base = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('/move')) {
+      return {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          error: '任务已被其他人修改（当前版本 v3，你的版本 v2），请刷新后重试',
+          conflict: true,
+          currentVersion: 3,
+        }),
+      };
+    }
+    return base(url, opts);
+  };
+  window.fetch = globalThis.fetch;
+
+  let errStatus = null;
+  let errMsg = '';
+  try {
+    await apiMod.api.move(1, { toStatus: 'done' });
+  } catch (err) {
+    errStatus = err.status;
+    errMsg = err.message;
+  }
+  check('冲突响应抛出 409', errStatus === 409, String(errStatus));
+  check('冲突提示可直接展示给用户', /已被其他人修改/.test(errMsg || ''), errMsg);
+
+  globalThis.fetch = base;
+  window.fetch = base;
+}
+
 console.log(`\n=====================================`);
 console.log(`  UI 冒烟：通过 ${pass} 项，失败 ${fail} 项`);
 console.log(`=====================================\n`);

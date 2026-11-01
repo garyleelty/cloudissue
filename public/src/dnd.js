@@ -125,7 +125,13 @@ async function performMove(drag, toStatus, afterId) {
   const snapshot = applyMoveOptimistic(drag.id, toStatus, afterId);
 
   try {
-    await api.move(drag.id, { toStatus, afterId, failReason });
+    await api.move(drag.id, {
+      toStatus,
+      afterId,
+      failReason,
+      // 乐观锁：带上手上这份版本号，被别人先动过则由服务端拒绝
+      expectedVersion: issue.version,
+    });
     toast(`已移动到「${STATUS_LABELS[toStatus]}」`, 'success');
   } catch (err) {
     // 先用快照即时回滚，再靠 finally 拉一次服务端数据兜底，

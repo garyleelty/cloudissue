@@ -89,6 +89,7 @@ async function fetchBoard(conn = pool) {
     dueDate: toDateStr(i.due_date),
     status: i.status,
     position: i.position,
+    version: Number(i.version ?? 1),
     createdAt: toIsoStr(i.created_at),
     updatedAt: toIsoStr(i.updated_at),
     logs: logMap.get(i.id) || [],
@@ -268,6 +269,21 @@ const ok = (data) => ({
 const StatusEnum = z.enum(STATUSES);
 const PriorityEnum = z.enum(PRIORITIES);
 
+/**
+ * 乐观锁：客户端把「自己看到的那份版本号」带回来，服务端比对不一致即判冲突。
+ * 只在调用方显式传入 expectedVersion 时生效，老客户端不受影响。
+ */
+const ExpectedVersion = z
+  .number()
+  .int()
+  .nonnegative()
+  .optional()
+  .describe('客户端持有的版本号；与库中不一致则判定为冲突');
+
+/** 冲突提示文案（前端直接展示） */
+const conflictMessage = (current, expected) =>
+  `任务已被其他人修改（当前版本 v${current}，你的版本 v${expected}），请刷新后重试`;
+
 // 1) 健康检查
 server.registerTool(
   'db_health',
@@ -372,12 +388,22 @@ server.registerTool(
     dueDate: z.string().nullable().optional(),
     status: StatusEnum.optional(),
       failReason: z.string().optional(),
+      expectedVersion: ExpectedVersion,
     },
   },
   async (args) => {
     const updated = await withTransaction(async (conn) => {
       const [[row]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
       if (!row) throw new Error('任务不存在或已被删除');
+
+      // 乐观并发闸门：别人已经改过这条任务，拒绝本次提交而不是静默覆盖
+      if (args.expectedVersion != null && Number(row.version) !== args.expectedVersion) {
+        return {
+          conflict: true,
+          currentVersion: Number(row.version),
+          expectedVersion: args.expectedVersion,
+        };
+      }
 
       const nextStatus = args.status ?? row.status;
       const statusChanged = nextStatus !== row.status;
@@ -398,7 +424,8 @@ server.registerTool(
 
       await conn.query(
         `UPDATE issues
-            SET title = ?, description = ?, priority = ?, assignee = ?, due_date = ?, status = ?
+            SET title = ?, description = ?, priority = ?, assignee = ?, due_date = ?, status = ?,
+                version = version + 1
           WHERE id = ?`,
         [patch.title, patch.description, patch.priority, patch.assignee, patch.due_date, patch.status, args.id]
       );
@@ -422,10 +449,19 @@ server.registerTool(
           ]
         );
       }
-      return true;
+      return { updated: true };
     });
 
-    return ok({ updated, issue: (await fetchBoard()).find((i) => i.id === args.id) });
+    if (updated.conflict) {
+      return ok({
+        conflict: true,
+        message: conflictMessage(updated.currentVersion, updated.expectedVersion),
+        currentVersion: updated.currentVersion,
+        issue: (await fetchBoard()).find((i) => i.id === args.id),
+      });
+    }
+
+    return ok({ updated: true, issue: (await fetchBoard()).find((i) => i.id === args.id) });
   }
 );
 
@@ -445,12 +481,22 @@ server.registerTool(
         .optional()
         .describe('插入到该任务之后；为空表示插到列首'),
       failReason: z.string().optional().default(''),
+      expectedVersion: ExpectedVersion,
     },
   },
   async (args) => {
     const result = await withTransaction(async (conn) => {
       const [[issue]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
       if (!issue) throw new Error('任务不存在或已被删除');
+
+      // 两人同时拖同一张卡时，后提交者被告知冲突，而不是覆盖掉前一次移动
+      if (args.expectedVersion != null && Number(issue.version) !== args.expectedVersion) {
+        return {
+          conflict: true,
+          currentVersion: Number(issue.version),
+          expectedVersion: args.expectedVersion,
+        };
+      }
 
       const fromStatus = issue.status;
       const statusChanged = fromStatus !== args.toStatus;
@@ -474,7 +520,9 @@ server.registerTool(
       }
       ids.splice(index, 0, args.id);
 
-      // 重新编号，保证 position 连续稳定
+      // 重新编号，保证 position 连续稳定。
+      // 这里刻意不动 version：同列其他卡片只是被重排，版本号应保持稳定，
+      // 否则任何一次排序都会让全列卡片的乐观锁集体失效。
       for (let i = 0; i < ids.length; i += 1) {
         await conn.query('UPDATE issues SET status = ?, position = ? WHERE id = ?', [
           args.toStatus,
@@ -482,6 +530,10 @@ server.registerTool(
           ids[i],
         ]);
       }
+
+      // 只有被移动的这张卡版本号 +1
+      const nextVersion = Number(issue.version) + 1;
+      await conn.query('UPDATE issues SET version = ? WHERE id = ?', [nextVersion, args.id]);
 
       if (statusChanged) {
         await conn.query(
@@ -495,8 +547,17 @@ server.registerTool(
           ]
         );
       }
-      return { fromStatus, toStatus: args.toStatus, statusChanged };
+      return { fromStatus, toStatus: args.toStatus, statusChanged, version: nextVersion };
     });
+
+    if (result.conflict) {
+      return ok({
+        conflict: true,
+        message: conflictMessage(result.currentVersion, result.expectedVersion),
+        currentVersion: result.currentVersion,
+        issue: (await fetchBoard()).find((i) => i.id === args.id),
+      });
+    }
 
     return ok({ moved: true, ...result });
   }

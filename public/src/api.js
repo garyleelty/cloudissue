@@ -19,7 +19,8 @@ async function request(url, options = {}) {
     /* 空响应 */
   }
 
-  if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`);
+  // 带上状态码：409（乐观锁冲突）需要和其它失败区分开处理
+  if (!res.ok) throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), { status: res.status });
 
   const method = (options.method || 'GET').toUpperCase();
   if (method !== 'GET') bumpRevision();
