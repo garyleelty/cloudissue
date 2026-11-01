@@ -320,6 +320,62 @@ console.log('\n--- 12. 乐观并发控制（前端） ---');
   window.fetch = base;
 }
 
+console.log('\n--- 13. 触屏拖拽（Pointer Events） ---');
+{
+  const card1 = document.querySelector('.column[data-status="in_progress"] .card[data-id="1"]');
+  const ptr = (type, target, opts = {}) => {
+    const ev = new window.Event(type, { bubbles: true, cancelable: true });
+    Object.assign(ev, { pointerType: 'touch', pointerId: 7, clientX: 0, clientY: 0, ...opts });
+    target.dispatchEvent(ev);
+  };
+
+  // 鼠标仍走原生 HTML5 DnD，不进触屏通道
+  ptr('pointerdown', card1, { pointerType: 'mouse' });
+  check('鼠标指针不触发触屏拖拽', dnd.isTouchDragging() === false);
+
+  // 长按激活
+  ptr('pointerdown', card1, { clientX: 0, clientY: 60 });
+  check('按下瞬间尚未激活（长按未成形）', dnd.isTouchDragging() === false);
+  await wait(320);
+  check('长按后进入拖拽态', dnd.isTouchDragging() === true);
+  check('被拖卡片带 dragging 标记', card1.classList.contains('dragging'));
+
+  // 落位后松手：走的是与鼠标同一套移动逻辑，并带上乐观锁版本号
+  let movePayload = null;
+  apiMod.api.move = async (id, payload) => {
+    movePayload = { id, ...payload };
+    return { moved: true };
+  };
+  s.issues = s.issues.map((i) => (i.id === 1 ? { ...i, version: 7 } : i));
+  notify();
+
+  ptr('pointermove', card1, { clientX: 0, clientY: 60 });
+  ptr('pointerup', card1, { clientX: 0, clientY: 60 });
+  await wait(60);
+
+  check('松手后调用了移动接口', movePayload !== null, JSON.stringify(movePayload));
+  check(
+    '落位列取自占位块所在列',
+    Boolean(movePayload && movePayload.toStatus === 'backlog'),
+    movePayload && movePayload.toStatus
+  );
+  check(
+    '移动请求携带乐观锁版本号',
+    movePayload && movePayload.expectedVersion === 7,
+    String(movePayload && movePayload.expectedVersion)
+  );
+  check('松手后退出拖拽态', dnd.isTouchDragging() === false);
+  check('卡片不再带 dragging 标记', card1.classList.contains('dragging') === false);
+
+  // 长按未成形就滑动 → 判定为页面滚动
+  ptr('pointerdown', card1, { clientX: 0, clientY: 60 });
+  ptr('pointermove', card1, { clientX: 0, clientY: 200 });
+  await wait(320);
+  check('短按滑动视为滚动，不激活拖拽', dnd.isTouchDragging() === false);
+  ptr('pointerup', card1, { clientX: 0, clientY: 200 });
+  check('滚动手势结束后卡片未被置灰', card1.classList.contains('dragging') === false);
+}
+
 console.log(`\n=====================================`);
 console.log(`  UI 冒烟：通过 ${pass} 项，失败 ${fail} 项`);
 console.log(`=====================================\n`);

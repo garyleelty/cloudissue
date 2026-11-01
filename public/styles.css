@@ -489,7 +489,20 @@ button, input, select, textarea {
 .card:hover { box-shadow: var(--sh-2); transform: translateY(-1px); }
 .card:active { cursor: grabbing; }
 
-.card.dragging { opacity: 0.35; box-shadow: var(--sh-3); transform: scale(0.99) rotate(0.6deg); }
+.card.dragging {
+  opacity: 0.35;
+  box-shadow: var(--sh-3);
+  transform: scale(0.99) rotate(0.6deg);
+  /* 触屏长按拖拽时不要弹出系统菜单，也不要选中卡片里的文字 */
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+/* 触屏设备上一律禁用长按菜单，否则长按激活拖拽会伴随系统弹层 */
+@media (hover: none) {
+  .card { -webkit-touch-callout: none; }
+}
+/* 拖拽期间关掉横向 scroll-snap，避免与自动滚动互相拉扯 */
+.board.touch-dragging { scroll-snap-type: none; }
 
 /* 优先级左侧色条 */
 .card::before {
