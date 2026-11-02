@@ -31,6 +31,7 @@ const cardSigs = new Map();
 /** 数据签名：只有签名变化才重写卡片内部 HTML */
 function cardSignature(issue) {
   return JSON.stringify([
+    state.selection.has(issue.id),
     issue.title,
     issue.description,
     issue.priority,
@@ -69,8 +70,14 @@ function cardInnerHtml(issue) {
 
   const logsHtml = [...issue.logs].reverse().map(logItemHtml).join('');
 
+  const picked = state.selection.has(issue.id);
+
   return `
-    <h3 class="card-title">${esc(issue.title)}</h3>
+    <div class="card-top">
+      <input class="card-pick" type="checkbox" data-act="select" data-id="${issue.id}"
+             aria-label="选择任务「${esc(issue.title)}」"${picked ? ' checked' : ''} />
+      <h3 class="card-title">${esc(issue.title)}</h3>
+    </div>
     ${issue.description ? `<p class="card-desc">${esc(issue.description)}</p>` : ''}
     <div class="card-meta">
       <span class="chip prio-${esc(issue.priority)}">${esc(PRIORITY_LABELS[issue.priority])}优先级</span>
@@ -107,6 +114,8 @@ export function buildSkeleton() {
                data-status="${status}"
                style="--accent:${COL_ACCENT[status]}">
         <header class="col-head">
+          <input class="col-pick" type="checkbox" data-act="select-col" data-status="${status}"
+                 aria-label="全选「${esc(STATUS_LABELS[status])}」列" />
           <span class="col-dot"></span>
           <span class="col-title">${esc(STATUS_LABELS[status])}</span>
           <span class="col-count">0/0</span>
@@ -146,6 +155,16 @@ export function renderBoard() {
     countEl.textContent = `${shown.length}/${all.length}`;
     countEl.classList.toggle('filtered', active);
 
+    // 列头全选框：全选勾上，部分勾选置为半选（indeterminate）
+    const pickEl = col.querySelector('.col-pick');
+    if (pickEl) {
+      const shownIds = shown.map((i) => i.id);
+      const pickedCount = shownIds.filter((id) => state.selection.has(id)).length;
+      pickEl.disabled = shownIds.length === 0;
+      pickEl.checked = shownIds.length > 0 && pickedCount === shownIds.length;
+      pickEl.indeterminate = pickedCount > 0 && pickedCount < shownIds.length;
+    }
+
     let prev = null;
     for (const issue of shown) {
       let node = cardNodes.get(issue.id);
@@ -156,6 +175,9 @@ export function renderBoard() {
         node.dataset.id = String(issue.id);
         cardNodes.set(issue.id, node);
       }
+
+      // 勾选态不进签名也能刷，但放进签名可以少一次 innerHTML 重写
+      node.classList.toggle('selected', state.selection.has(issue.id));
 
       const sig = cardSignature(issue);
       if (cardSigs.get(issue.id) !== sig) {
@@ -186,7 +208,25 @@ export function renderBoard() {
     }
   }
 
+  renderSelectionBar();
   renderTabs();
+}
+
+/** 底部批量操作条：有勾选才出现 */
+export function renderSelectionBar() {
+  const bar = $('#batchBar');
+  if (!bar) return;
+
+  const sel = $('#batchStatus');
+  if (sel && !sel.options.length) {
+    sel.innerHTML = STATUSES.map(
+      (s) => `<option value="${esc(s)}">${esc(STATUS_LABELS[s])}</option>`
+    ).join('');
+  }
+
+  const n = state.selection.size;
+  $('#batchCount').textContent = `已选 ${n} 项`;
+  bar.hidden = n === 0;
 }
 
 /** 移动端列切换标签 */

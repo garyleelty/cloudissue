@@ -82,6 +82,20 @@
   <!-- ===================== 看板 ===================== -->
   <main id="board" class="board" aria-label="任务看板"></main>
 
+  <!-- ===================== 批量操作条 ===================== -->
+  <div id="batchBar" class="batch-bar" hidden>
+    <span class="batch-count" id="batchCount">已选 0 项</span>
+    <div class="batch-actions">
+      <label class="batch-pick">
+        <span>移动到</span>
+        <select id="batchStatus" class="batch-select" aria-label="批量移动到的列"></select>
+      </label>
+      <button id="batchMove" class="btn btn-primary" type="button">移动</button>
+      <button id="batchDelete" class="btn btn-danger" type="button">删除</button>
+      <button id="batchCancel" class="btn btn-ghost" type="button">取消选择</button>
+    </div>
+  </div>
+
   <!-- ===================== 弹窗 ===================== -->
   <div id="modalRoot" class="modal-root" hidden>
     <div class="modal-backdrop" data-close="1"></div>

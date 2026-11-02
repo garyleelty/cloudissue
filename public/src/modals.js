@@ -158,9 +158,24 @@ async function submitForm(e) {
 
 /** 删除二次确认 */
 export function askDelete(issue) {
-  pendingDelete = issue;
+  pendingDelete = { id: issue.id, title: issue.title };
   $('#confirmText').innerHTML =
     `确定要删除任务「<strong>${esc(issue.title)}</strong>」吗？<br>该操作不可撤销，` +
+    `任务的标签与状态变更记录将一并删除。`;
+  openModal(modalConfirm);
+  setTimeout(() => $('#confirmOk').focus(), 60);
+}
+
+/**
+ * 批量删除二次确认：与单条删除共用同一个确认弹窗，
+ * 只是落库时走批量接口。
+ * @param {number[]} ids
+ */
+export function askDeleteMany(ids) {
+  if (!ids.length) return;
+  pendingDelete = { ids: [...ids] };
+  $('#confirmText').innerHTML =
+    `确定要删除选中的 <strong>${ids.length}</strong> 个任务吗？<br>该操作不可撤销，` +
     `任务的标签与状态变更记录将一并删除。`;
   openModal(modalConfirm);
   setTimeout(() => $('#confirmOk').focus(), 60);
@@ -232,8 +247,20 @@ export function initModals(callbacks = {}) {
     pendingDelete = null;
     closeModals();
     try {
-      await api.remove(target.id);
-      toast('任务已删除', 'success');
+      // 批量删除与单条删除共用确认弹窗，靠 ids 是否数组区分
+      if (Array.isArray(target.ids)) {
+        const res = await api.batchRemove(target.ids);
+        const skipped = res?.failed?.length ?? 0;
+        toast(
+          skipped
+            ? `已删除 ${res.deleted} 个任务，${skipped} 个失败`
+            : `已删除 ${res?.deleted ?? target.ids.length} 个任务`,
+          skipped ? 'error' : 'success'
+        );
+      } else {
+        await api.remove(target.id);
+        toast('任务已删除', 'success');
+      }
     } catch (err) {
       toast(err.message, 'error');
     } finally {

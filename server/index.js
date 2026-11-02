@@ -138,6 +138,79 @@ app.post('/api/issues/:id/move', asyncHandler(async (req, res) => {
   res.json(data);
 }));
 
+// ------------------------------------------------------------------
+// 批量操作
+//
+// 刻意不新增 MCP tool：批量只是「对同一批 id 循环调用既有 tool」，
+// 校验（失败原因必填、状态枚举、乐观锁）仍然留在 MCP 内部，
+// HTTP 层只负责编排与汇总结果，不碰任何 SQL。
+// ------------------------------------------------------------------
+
+/** 校验并归一化 id 列表：去重、去非法值，空列表返回 null */
+function parseIds(input) {
+  if (!Array.isArray(input)) return null;
+  const ids = [...new Set(input.map(Number))].filter((n) => Number.isInteger(n) && n > 0);
+  return ids.length ? ids : null;
+}
+
+/** 目标列当前最后一张卡片的 id，用于把批量移动的结果追加到列尾 */
+async function tailIdOf(toStatus, exclude) {
+  const { issues = [] } = await callTool('issue_list');
+  const rest = issues.filter((i) => i.status === toStatus && !exclude.has(i.id));
+  return rest.length ? Number(rest[rest.length - 1].id) : null;
+}
+
+/** 批量移动：逐个走 issue_move，失败的单独汇总，不影响其余卡片 */
+app.post('/api/issues/batch/move', asyncHandler(async (req, res) => {
+  const ids = parseIds(req.body?.ids);
+  if (!ids) return res.status(400).json({ error: '请先选择要移动的任务' });
+
+  const { toStatus, failReason } = req.body || {};
+  const exclude = new Set(ids);
+  const tailId = await tailIdOf(toStatus, exclude).catch(() => null);
+
+  const moved = [];
+  const failed = [];
+  let afterId = tailId;
+
+  for (const id of ids) {
+    try {
+      await callTool('issue_move', { id, toStatus, afterId, failReason: failReason ?? '' });
+      moved.push(id);
+      afterId = id; // 依次接在前一张之后，保持勾选顺序
+    } catch (err) {
+      failed.push({ id, error: err.message });
+    }
+  }
+
+  if (!moved.length) {
+    return res.status(400).json({ error: failed[0]?.error || '批量移动失败', failed });
+  }
+  res.json({ moved: moved.length, ids: moved, failed, toStatus });
+}));
+
+/** 批量删除 */
+app.post('/api/issues/batch/delete', asyncHandler(async (req, res) => {
+  const ids = parseIds(req.body?.ids);
+  if (!ids) return res.status(400).json({ error: '请先选择要删除的任务' });
+
+  const deleted = [];
+  const failed = [];
+  for (const id of ids) {
+    try {
+      await callTool('issue_delete', { id });
+      deleted.push(id);
+    } catch (err) {
+      failed.push({ id, error: err.message });
+    }
+  }
+
+  if (!deleted.length) {
+    return res.status(400).json({ error: failed[0]?.error || '批量删除失败', failed });
+  }
+  res.json({ deleted: deleted.length, ids: deleted, failed });
+}));
+
 /** 删除任务 */
 app.delete('/api/issues/:id', asyncHandler(async (req, res) => {
   const id = Number(req.params.id);

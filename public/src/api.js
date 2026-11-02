@@ -48,4 +48,18 @@ export const api = {
     request(`/api/issues/${id}/move`, { method: 'POST', body: JSON.stringify(payload) }),
   /** @param {number} id */
   remove: (id) => request(`/api/issues/${id}`, { method: 'DELETE' }),
+
+  // 批量操作：一次请求处理一组 id，服务端内部仍逐个走 MCP tools
+  /**
+   * @param {number[]} ids
+   * @param {{ toStatus: string, failReason?: string }} payload
+   */
+  batchMove: (ids, payload) =>
+    request('/api/issues/batch/move', {
+      method: 'POST',
+      body: JSON.stringify({ ids, ...payload }),
+    }),
+  /** @param {number[]} ids */
+  batchRemove: (ids) =>
+    request('/api/issues/batch/delete', { method: 'POST', body: JSON.stringify({ ids }) }),
 };

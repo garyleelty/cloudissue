@@ -1,22 +1,35 @@
 /**
  * 入口：装配各层，建立「事件 → 状态 → 重绘」的单向数据流。
  */
-import { state, onChange, notify, resetFilters } from './state.js';
+import {
+  state,
+  onChange,
+  notify,
+  resetFilters,
+  clearSelection,
+  pruneSelection,
+  selectedIds,
+  setSelected,
+  toggleSelected,
+} from './state.js';
 import { api } from './api.js';
 import { toast } from './toast.js';
 import * as render from './render.js';
 import { syncDropdowns, closeAllDropdowns } from './dropdowns.js';
 import { initDnd } from './dnd.js';
 import { initCrossTabSync } from './sync.js';
+import { filteredIssues } from './filters.js';
 import {
   initModals,
   openForm,
   closeModals,
   askDelete,
+  askDeleteMany,
+  askFailureReason,
   cancelPendingReason,
   hasPendingReason,
 } from './modals.js';
-import { STATUSES } from '../../shared/constants.js';
+import { STATUSES, STATUS_LABELS, FAIL_STATUS } from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
@@ -28,6 +41,8 @@ async function load() {
   try {
     const data = await api.list();
     state.issues = data.issues ?? [];
+    // 勾选里可能残留已被别处删掉的卡片，重新拉取后顺手清掉
+    pruneSelection(new Set(state.issues.map((i) => i.id)));
     render.syncAssigneeList();
     syncDropdowns();
     notify();
@@ -56,6 +71,7 @@ function bindGlobalEvents() {
 
   $('#btnClear').addEventListener('click', () => {
     resetFilters();
+    clearSelection();
     $('#fKeyword').value = '';
     notify();
   });
@@ -88,11 +104,26 @@ function bindGlobalEvents() {
   board.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
+
+    // 列头全选：只勾选当前筛选后可见的卡片，避免误伤被筛掉的卡片
+    if (btn.dataset.act === 'select-col') {
+      const ids = filteredIssues()
+        .filter((i) => i.status === btn.dataset.status)
+        .map((i) => i.id);
+      const allPicked = ids.length > 0 && ids.every((id) => state.selection.has(id));
+      for (const id of ids) setSelected(id, !allPicked);
+      notify();
+      return;
+    }
+
     const id = Number(btn.dataset.id);
     const issue = state.issues.find((i) => i.id === id);
     if (!issue) return;
 
-    if (btn.dataset.act === 'logs') {
+    if (btn.dataset.act === 'select') {
+      toggleSelected(id);
+      notify();
+    } else if (btn.dataset.act === 'logs') {
       if (state.expanded.has(id)) state.expanded.delete(id);
       else state.expanded.add(id);
       notify();
@@ -139,6 +170,58 @@ function bindGlobalEvents() {
   );
 }
 
+/**
+ * 批量操作条：移动 / 删除 / 取消选择。
+ * 移动落库同样走失败原因闸门（在勾选态清除之前），删除走二次确认。
+ */
+function bindBatchBar() {
+  $('#batchCancel').addEventListener('click', () => {
+    clearSelection();
+    notify();
+  });
+
+  $('#batchDelete').addEventListener('click', () => {
+    const ids = selectedIds();
+    if (!ids.length) return;
+    askDeleteMany(ids);
+  });
+
+  $('#batchMove').addEventListener('click', async () => {
+    const ids = selectedIds();
+    if (!ids.length) return;
+
+    const toStatus = $('#batchStatus').value;
+    let failReason = '';
+
+    // 与单卡拖拽同一条规则：进「失败」列必须先拿到原因
+    if (toStatus === FAIL_STATUS) {
+      const reason = await askFailureReason({ id: ids[0], title: `选中的 ${ids.length} 个任务` });
+      if (!reason) {
+        toast('已取消批量移动：未填写失败原因', 'error');
+        return;
+      }
+      failReason = reason;
+    }
+
+    try {
+      const res = await api.batchMove(ids, { toStatus, failReason });
+      const skipped = res?.failed?.length ?? 0;
+      const moved = res?.moved ?? ids.length;
+      toast(
+        skipped
+          ? `已移动 ${moved} 个任务，${skipped} 个失败`
+          : `已移动 ${moved} 个任务到「${STATUS_LABELS[toStatus]}」`,
+        skipped ? 'error' : 'success'
+      );
+      clearSelection();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      await load();
+    }
+  });
+}
+
 async function init() {
   state.activeTab = STATUSES[0];
 
@@ -147,6 +230,7 @@ async function init() {
   initModals({ onChanged: load });
   initCrossTabSync(load);
   bindGlobalEvents();
+  bindBatchBar();
 
   onChange(() => render.renderBoard());
 

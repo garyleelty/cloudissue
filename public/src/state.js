@@ -13,6 +13,7 @@ import { STATUSES } from '../../shared/constants.js';
  * @property {{ keyword: string, priority: Set<string>, tag: Set<string>, assignee: Set<string> }} filters
  * @property {{ id: number, fromStatus: string } | null} drag
  * @property {string} activeTab
+ * @property {Set<number>} selection   批量操作勾选中的卡片
  */
 
 /** @type {BoardState} */
@@ -29,6 +30,7 @@ export const state = {
   },
   drag: null,
   activeTab: STATUSES[0],
+  selection: new Set(),
 };
 
 /** @type {Set<(s: BoardState) => void>} */
@@ -51,4 +53,39 @@ export function resetFilters() {
   state.filters.priority.clear();
   state.filters.tag.clear();
   state.filters.assignee.clear();
+}
+
+// ------------------------------------------------------------------
+// 批量选择
+// ------------------------------------------------------------------
+
+/** @param {number} id @param {boolean} on */
+export function setSelected(id, on) {
+  if (on) state.selection.add(id);
+  else state.selection.delete(id);
+}
+
+/** @param {number} id */
+export function toggleSelected(id) {
+  setSelected(id, !state.selection.has(id));
+}
+
+export function clearSelection() {
+  state.selection.clear();
+}
+
+/** @returns {number[]} 选中 id，按看板现有顺序输出，保证批量移动的顺序稳定 */
+export function selectedIds() {
+  return state.issues.filter((i) => state.selection.has(i.id)).map((i) => i.id);
+}
+
+/**
+ * 丢弃已经不存在的勾选项（卡片被删除，或被其他标签页改没了）。
+ * @param {Set<number> | number[]} existing
+ */
+export function pruneSelection(existing) {
+  const valid = existing instanceof Set ? existing : new Set(existing);
+  for (const id of [...state.selection]) {
+    if (!valid.has(id)) state.selection.delete(id);
+  }
 }
