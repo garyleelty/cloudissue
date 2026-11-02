@@ -31,6 +31,18 @@
   改这条时注意：失败原因闸门必须在乐观更新**之前**，否则取消填原因卡片已经跑掉了。
 - 跨标签页同步靠 localStorage 修订号（`sync.js`）+ storage 事件。
   修订号统一挂 `api.js` 的 `request()`（成功非 GET），不要在调用点各写一遍。
+- 乐观锁：`issues.version`，编辑与移动带 `expectedVersion`，冲突由 MCP 返回 `conflict`
+  再由 `server/index.js` 翻译成 409（校验留在 MCP 内，HTTP 层只翻状态码）。
+  **重排循环不要 bump 其他卡片的 version**，否则拖一次整列锁死。
+- 拖拽有两条输入路径：鼠标走原生 HTML5 DnD，触屏/触控笔走 `dnd.js` 里的 Pointer Events
+  （长按 220ms 激活），两者最终都汇到 `performMove`，别再各写一份落位逻辑。
+- Node / jsdom 里 `requestAnimationFrame`、`elementFromPoint`、`scrollBy` 都不存在，
+  dnd 里已做兜底（setTimeout / 列矩形命中 / scrollLeft +=），改动画逻辑时别直接用原生 API。
+- 批量操作**不新增 MCP tool**：服务端对同一批 id 循环调用既有 `issue_move` / `issue_delete`，
+  校验仍留在 MCP 内，tools 数量保持 7 个。勾选态在 `state.selection`（`selectedIds()` 按
+  `state.issues` 顺序输出，保证批量移动顺序稳定）。
+- `/api/issues/batch/*` 必须注册在 `/api/issues/:id/move` **之前**，否则 `batch` 被 `:id`
+  吃掉，批量请求一律 400「非法的任务 ID」。
 
 ## 前端结构（已拆分，勿退回巨石文件）
 
@@ -51,12 +63,14 @@ utils / toast / api / state / filters / dropdowns / render / dnd / modals / sync
 
 ```bash
 npm run test:mcp   # MCP 传输 + 工具注册冒烟
-npm test           # 端到端集成测试（32 项断言），需先启动服务 + MySQL
-npm run test:ui    # UI 冒烟（jsdom，38 项），不需服务与数据库
+npm test           # 端到端集成测试（57 项断言），需先启动服务 + MySQL
+npm run test:ui    # UI 冒烟（jsdom，70 项），不需服务与数据库
 ```
 
 > UI 冒烟里第 10 组（乐观更新/回滚）与第 11 组（跨标签页同步）用 `wait(200)` 等异步，
 > 改动 debounce 或 reload 时序时要留意这里的等待时长。
+> 第 13 组（触屏拖拽）用伪造的 pointer 事件驱动，坐标必须取 0 —— jsdom 里所有 rect 都是 0，
+> 命中列的几何兜底只认 `x === 0`。
 
 > 三套都要跑。API 测试覆盖不到 UI 层——状态下拉为空的缺陷就是证据。
 
