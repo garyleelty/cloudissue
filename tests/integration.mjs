@@ -176,6 +176,68 @@ async function main() {
   const restored = await getIssue(any.id);
   check('冲突未覆盖他人改动（标题仍是最新值）', restored.title !== `${any.title}·过期`, restored.title);
 
+  console.log('\n--- 12. 批量移动与批量删除 ---');
+  const b1 = await post('/api/issues', { title: '批量A', status: 'backlog', priority: 'low' });
+  const b2 = await post('/api/issues', { title: '批量B', status: 'backlog', priority: 'low' });
+  const b3 = await post('/api/issues', { title: '批量C', status: 'backlog', priority: 'low' });
+  const bIds = [b1.data.id, b2.data.id, b3.data.id];
+  const statusOf = (list, id) => list.find((i) => i.id === id)?.status;
+
+  const noIds = await post('/api/issues/batch/move', { toStatus: 'planning' });
+  check('未选择任务时批量移动被拒绝', noIds.status === 400, JSON.stringify(noIds.data));
+
+  const badBatch = await post('/api/issues/batch/move', { ids: bIds, toStatus: 'failed' });
+  check('批量移动到失败列未填原因被拒绝', badBatch.status === 400, JSON.stringify(badBatch.data));
+  check('错误同样明确提及失败原因', /失败原因/.test(badBatch.data.error || ''), badBatch.data.error);
+
+  const { data: afterBadBatch } = await api('/api/issues');
+  check(
+    '被拒绝后三张卡仍停留在原列',
+    bIds.every((id) => statusOf(afterBadBatch.issues, id) === 'backlog'),
+    bIds.map((id) => statusOf(afterBadBatch.issues, id)).join(',')
+  );
+
+  const mv = await post('/api/issues/batch/move', { ids: bIds, toStatus: 'planning' });
+  check('批量移动成功', mv.status === 200 && mv.data.moved === 3, JSON.stringify(mv.data));
+  check('批量移动没有失败项', (mv.data.failed || []).length === 0, JSON.stringify(mv.data.failed));
+
+  const { data: afterMv } = await api('/api/issues');
+  check(
+    '三张卡状态均已变更',
+    bIds.every((id) => statusOf(afterMv.issues, id) === 'planning'),
+    bIds.map((id) => statusOf(afterMv.issues, id)).join(',')
+  );
+  const planningTitles = afterMv.issues.filter((i) => i.status === 'planning').map((i) => i.title);
+  check(
+    '按勾选顺序追加到目标列尾部',
+    JSON.stringify(planningTitles.slice(-3)) === JSON.stringify(['批量A', '批量B', '批量C']),
+    planningTitles.join(',')
+  );
+
+  const mvFail = await post('/api/issues/batch/move', {
+    ids: bIds,
+    toStatus: 'failed',
+    failReason: '批量：依赖方接口整体不可用',
+  });
+  check('填写原因后批量进入失败列', mvFail.status === 200 && mvFail.data.moved === 3, JSON.stringify(mvFail.data));
+  const failedOne = await getIssue(bIds[0]);
+  const batchLog = failedOne.logs[failedOne.logs.length - 1];
+  check('批量移动同样写入变更记录', batchLog.toStatus === 'failed', JSON.stringify(batchLog));
+  check('变更记录带上批量填写的原因', batchLog.reason === '批量：依赖方接口整体不可用', batchLog.reason);
+
+  const badDel = await post('/api/issues/batch/delete', { ids: [] });
+  check('空 id 列表的批量删除被拒绝', badDel.status === 400, JSON.stringify(badDel.data));
+
+  const del2 = await post('/api/issues/batch/delete', { ids: bIds });
+  check('批量删除成功', del2.status === 200 && del2.data.deleted === 3, JSON.stringify(del2.data));
+
+  const { data: afterBatch } = await api('/api/issues');
+  check('三张卡已从列表移除', !afterBatch.issues.some((i) => bIds.includes(i.id)));
+  check('总数回到 10（批量操作未污染示例数据）', afterBatch.issues.length === 10, String(afterBatch.issues.length));
+
+  const delMissing = await post('/api/issues/batch/delete', { ids: [99999999] });
+  check('删除不存在的任务返回 400', delMissing.status === 400, JSON.stringify(delMissing.data));
+
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
   console.log(`=====================================\n`);

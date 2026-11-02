@@ -376,6 +376,90 @@ console.log('\n--- 13. 触屏拖拽（Pointer Events） ---');
   check('滚动手势结束后卡片未被置灰', card1.classList.contains('dragging') === false);
 }
 
+console.log('\n--- 14. 批量选择与操作条 ---');
+{
+  s.filters.keyword = '';
+  s.filters.assignee.clear();
+  s.selection.clear();
+  notify();
+
+  const bar = $('#batchBar');
+  const pick = (id) => document.querySelector(`.card[data-id="${id}"] .card-pick`);
+
+  check('未勾选时批量条隐藏', bar.hidden === true);
+  check('每张卡片都有复选框', [1, 2, 3, 4, 5].every((id) => Boolean(pick(id))));
+
+  pick(1).click();
+  await wait(20);
+  check('勾选后进入 selection', s.selection.has(1));
+  check('勾选后批量条出现', bar.hidden === false);
+  check('计数显示「已选 1 项」', $('#batchCount').textContent === '已选 1 项', $('#batchCount').textContent);
+  check('卡片带上 selected 标记', document.querySelector('.card[data-id="1"]').classList.contains('selected'));
+
+  pick(2).click();
+  await wait(20);
+  check('再勾选一张后计数为 2', $('#batchCount').textContent === '已选 2 项', $('#batchCount').textContent);
+
+  // 列头全选：只勾选本列当前可见的卡片
+  const colPick = document.querySelector('.column[data-status="backlog"] .col-pick');
+  colPick.click();
+  await wait(20);
+  check('列头全选勾选本列可见卡片', s.selection.has(5), [...s.selection].join(','));
+  colPick.click();
+  await wait(20);
+  check('再次点击列头取消本列勾选', s.selection.has(5) === false, [...s.selection].join(','));
+
+  // 批量移动
+  let moveArgs = null;
+  const origBatchMove = apiMod.api.batchMove;
+  apiMod.api.batchMove = async (ids, payload) => {
+    moveArgs = { ids, ...payload };
+    return { moved: ids.length, ids, failed: [] };
+  };
+  $('#batchStatus').value = 'done';
+  $('#batchMove').click();
+  await wait(80);
+
+  check('批量移动调用了批量接口', moveArgs !== null, JSON.stringify(moveArgs));
+  check(
+    '批量移动带上全部选中 id',
+    JSON.stringify(moveArgs?.ids) === JSON.stringify([1, 2]),
+    JSON.stringify(moveArgs?.ids)
+  );
+  check('批量移动目标列取自下拉', moveArgs?.toStatus === 'done', String(moveArgs?.toStatus));
+  check('成功后清空勾选', s.selection.size === 0, String(s.selection.size));
+  check('清空后批量条收起', bar.hidden === true);
+  apiMod.api.batchMove = origBatchMove;
+
+  // 批量删除：必须走二次确认
+  s.selection.add(3);
+  notify();
+  let removeIds = null;
+  const origBatchRemove = apiMod.api.batchRemove;
+  apiMod.api.batchRemove = async (ids) => {
+    removeIds = ids;
+    return { deleted: ids.length, ids, failed: [] };
+  };
+
+  $('#batchDelete').click();
+  await wait(30);
+  check('批量删除先弹二次确认', $('#modalRoot').hidden === false && $('#modalConfirm').hidden === false);
+  check('确认文案说明数量', /1/.test($('#confirmText').textContent), $('#confirmText').textContent);
+  check('未确认前不调用删除接口', removeIds === null);
+
+  $('#confirmOk').click();
+  await wait(120);
+  check('确认后调用批量删除接口', JSON.stringify(removeIds) === JSON.stringify([3]), JSON.stringify(removeIds));
+  apiMod.api.batchRemove = origBatchRemove;
+
+  // 取消选择
+  s.selection.add(4);
+  notify();
+  $('#batchCancel').click();
+  await wait(20);
+  check('取消选择清空勾选', s.selection.size === 0, String(s.selection.size));
+}
+
 console.log(`\n=====================================`);
 console.log(`  UI 冒烟：通过 ${pass} 项，失败 ${fail} 项`);
 console.log(`=====================================\n`);
