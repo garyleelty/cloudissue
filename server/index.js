@@ -127,23 +127,15 @@ app.put('/api/issues/:id', asyncHandler(async (req, res) => {
   res.json(data);
 }));
 
-/** 移动 / 排序 */
-app.post('/api/issues/:id/move', asyncHandler(async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) {
-    return res.status(400).json({ error: '非法的任务 ID' });
-  }
-  const data = await callTool('issue_move', { ...(req.body || {}), id });
-  if (data.conflict) return conflictResponse(res, data);
-  res.json(data);
-}));
-
 // ------------------------------------------------------------------
 // 批量操作
 //
 // 刻意不新增 MCP tool：批量只是「对同一批 id 循环调用既有 tool」，
 // 校验（失败原因必填、状态枚举、乐观锁）仍然留在 MCP 内部，
 // HTTP 层只负责编排与汇总结果，不碰任何 SQL。
+//
+// 注意：这两个路由必须注册在 /api/issues/:id/move 之前，
+// 否则 'batch' 会被 :id 吃掉，直接返回「非法的任务 ID」。
 // ------------------------------------------------------------------
 
 /** 校验并归一化 id 列表：去重、去非法值，空列表返回 null */
@@ -209,6 +201,17 @@ app.post('/api/issues/batch/delete', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: failed[0]?.error || '批量删除失败', failed });
   }
   res.json({ deleted: deleted.length, ids: deleted, failed });
+}));
+
+/** 移动 / 排序 */
+app.post('/api/issues/:id/move', asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: '非法的任务 ID' });
+  }
+  const data = await callTool('issue_move', { ...(req.body || {}), id });
+  if (data.conflict) return conflictResponse(res, data);
+  res.json(data);
 }));
 
 /** 删除任务 */
