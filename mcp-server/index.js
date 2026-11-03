@@ -12,9 +12,10 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
-import { pool, query, withTransaction, runSchema } from './db.js';
+import { pool, query, withTransaction, runSchema, ensureDatabase, closeDb } from './db.js';
 import { STATUSES, PRIORITIES, FAIL_STATUS } from '../shared/constants.js';
 
 // ------------------------------------------------------------------
@@ -22,6 +23,12 @@ import { STATUSES, PRIORITIES, FAIL_STATUS } from '../shared/constants.js';
 // ------------------------------------------------------------------
 const toDateStr = (v) => (v instanceof Date ? v.toISOString().slice(0, 10) : v || null);
 const toIsoStr = (v) => (v instanceof Date ? v.toISOString() : v || null);
+
+/**
+ * 业务校验失败统一抛 McpError(InvalidParams)：HTTP 层据此映射 400 并把
+ * message 透出给用户；非 McpError 的意外异常则按系统故障处理（5xx，不透出细节）。
+ */
+const bizError = (message) => new McpError(ErrorCode.InvalidParams, message);
 
 /** 归一化标签：支持数组或逗号分隔字符串 */
 function normalizeTags(input) {
@@ -39,6 +46,25 @@ function normalizeTags(input) {
     out.push(tag);
   }
   return out;
+}
+
+/** issues 行 + 标签/日志行 → 对外 JSON 结构（fetchBoard 与 fetchIssueById 共用） */
+function shapeIssue(i, tags, logs) {
+  return {
+    id: i.id,
+    title: i.title,
+    description: i.description || '',
+    priority: i.priority,
+    assignee: i.assignee || '',
+    tags,
+    dueDate: toDateStr(i.due_date),
+    status: i.status,
+    position: i.position,
+    version: Number(i.version ?? 1),
+    createdAt: toIsoStr(i.created_at),
+    updatedAt: toIsoStr(i.updated_at),
+    logs,
+  };
 }
 
 /** 读取整块看板数据（任务 + 标签 + 状态变更记录） */
@@ -79,21 +105,39 @@ async function fetchBoard(conn = pool) {
     });
   }
 
-  return issues.map((i) => ({
-    id: i.id,
-    title: i.title,
-    description: i.description || '',
-    priority: i.priority,
-    assignee: i.assignee || '',
-    tags: tagMap.get(i.id) || [],
-    dueDate: toDateStr(i.due_date),
-    status: i.status,
-    position: i.position,
-    version: Number(i.version ?? 1),
-    createdAt: toIsoStr(i.created_at),
-    updatedAt: toIsoStr(i.updated_at),
-    logs: logMap.get(i.id) || [],
-  }));
+  return issues.map((i) =>
+    shapeIssue(i, tagMap.get(i.id) || [], logMap.get(i.id) || [])
+  );
+}
+
+/**
+ * 按 id 读取单条任务（含标签与变更记录）。
+ * create/update/move 的返回值用：此前是「全表拉回再 find」，随数据量线性变慢。
+ */
+async function fetchIssueById(id, conn = pool) {
+  const [[issue]] = await conn.query('SELECT * FROM issues WHERE id = ?', [id]);
+  if (!issue) return null;
+  const [tagRows] = await conn.query(
+    'SELECT tag FROM issue_tags WHERE issue_id = ? ORDER BY tag ASC',
+    [id]
+  );
+  const [logRows] = await conn.query(
+    `SELECT id, from_status, to_status, reason, changed_at
+       FROM issue_status_logs WHERE issue_id = ?
+      ORDER BY changed_at ASC, id ASC`,
+    [id]
+  );
+  return shapeIssue(
+    issue,
+    tagRows.map((r) => r.tag),
+    logRows.map((r) => ({
+      id: r.id,
+      fromStatus: r.from_status,
+      toStatus: r.to_status,
+      reason: r.reason || '',
+      changedAt: toIsoStr(r.changed_at),
+    }))
+  );
 }
 
 // ------------------------------------------------------------------
@@ -302,6 +346,7 @@ server.registerTool(
       '执行建表脚本；仅当任务表为空时写入覆盖五列与三档优先级的示例任务',
   },
   async () => {
+    await ensureDatabase();
     await runSchema();
     const seed = await withTransaction(seedIfEmpty);
     return ok({ schemaReady: true, ...seed });
@@ -321,12 +366,12 @@ server.registerTool(
   {
     description: '新建一个任务卡片',
     inputSchema: {
-    title: z.string().min(1, '标题不能为空').max(255),
-    description: z.string().max(5000).optional().default(''),
-    priority: PriorityEnum.optional().default('medium'),
-    assignee: z.string().max(64).optional().default(''),
-    tags: z.union([z.array(z.string()), z.string()]).optional().default([]),
-    dueDate: z.string().nullable().optional(),
+      title: z.string().min(1, '标题不能为空').max(255),
+      description: z.string().max(5000).optional().default(''),
+      priority: PriorityEnum.optional().default('medium'),
+      assignee: z.string().max(64).optional().default(''),
+      tags: z.union([z.array(z.string()), z.string()]).optional().default([]),
+      dueDate: z.string().nullable().optional(),
       status: StatusEnum.optional().default('backlog'),
       failReason: z.string().optional().default(''),
     },
@@ -334,7 +379,7 @@ server.registerTool(
   async (args) => {
     const status = args.status ?? 'backlog';
     if (status === FAIL_STATUS && !String(args.failReason || '').trim()) {
-      throw new Error('创建到「失败」列的任务必须填写失败原因');
+      throw bizError('创建到「失败」列的任务必须填写失败原因');
     }
 
     const issue = await withTransaction(async (conn) => {
@@ -369,7 +414,7 @@ server.registerTool(
     });
 
     const [rows] = await pool.query('SELECT * FROM issues WHERE id = ?', [issue]);
-    return ok({ created: true, id: issue, issue: (await fetchBoard()).find((i) => i.id === issue) ?? rows[0] });
+    return ok({ created: true, id: issue, issue: (await fetchIssueById(issue)) ?? rows[0] });
   }
 );
 
@@ -380,13 +425,13 @@ server.registerTool(
     description: '更新任务的标题、描述、优先级、负责人、标签、截止日期等字段',
     inputSchema: {
       id: z.number().int().positive(),
-    title: z.string().min(1).max(255).optional(),
-    description: z.string().max(5000).optional(),
-    priority: PriorityEnum.optional(),
-    assignee: z.string().max(64).optional(),
-    tags: z.union([z.array(z.string()), z.string()]).optional(),
-    dueDate: z.string().nullable().optional(),
-    status: StatusEnum.optional(),
+      title: z.string().min(1).max(255).optional(),
+      description: z.string().max(5000).optional(),
+      priority: PriorityEnum.optional(),
+      assignee: z.string().max(64).optional(),
+      tags: z.union([z.array(z.string()), z.string()]).optional(),
+      dueDate: z.string().nullable().optional(),
+      status: StatusEnum.optional(),
       failReason: z.string().optional(),
       expectedVersion: ExpectedVersion,
     },
@@ -394,7 +439,7 @@ server.registerTool(
   async (args) => {
     const updated = await withTransaction(async (conn) => {
       const [[row]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
-      if (!row) throw new Error('任务不存在或已被删除');
+      if (!row) throw bizError('任务不存在或已被删除');
 
       // 乐观并发闸门：别人已经改过这条任务，拒绝本次提交而不是静默覆盖
       if (args.expectedVersion != null && Number(row.version) !== args.expectedVersion) {
@@ -410,7 +455,7 @@ server.registerTool(
 
       if (nextStatus === FAIL_STATUS && statusChanged) {
         const reason = String(args.failReason || '').trim();
-        if (!reason) throw new Error('变更为「失败」状态必须填写失败原因');
+        if (!reason) throw bizError('变更为「失败」状态必须填写失败原因');
       }
 
       const patch = {
@@ -457,11 +502,11 @@ server.registerTool(
         conflict: true,
         message: conflictMessage(updated.currentVersion, updated.expectedVersion),
         currentVersion: updated.currentVersion,
-        issue: (await fetchBoard()).find((i) => i.id === args.id),
+        issue: await fetchIssueById(args.id),
       });
     }
 
-    return ok({ updated: true, issue: (await fetchBoard()).find((i) => i.id === args.id) });
+    return ok({ updated: true, issue: await fetchIssueById(args.id) });
   }
 );
 
@@ -487,7 +532,7 @@ server.registerTool(
   async (args) => {
     const result = await withTransaction(async (conn) => {
       const [[issue]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
-      if (!issue) throw new Error('任务不存在或已被删除');
+      if (!issue) throw bizError('任务不存在或已被删除');
 
       // 两人同时拖同一张卡时，后提交者被告知冲突，而不是覆盖掉前一次移动
       if (args.expectedVersion != null && Number(issue.version) !== args.expectedVersion) {
@@ -504,7 +549,7 @@ server.registerTool(
       // 关键校验：进入「失败」列必须填写失败原因
       if (statusChanged && args.toStatus === FAIL_STATUS) {
         const reason = String(args.failReason || '').trim();
-        if (!reason) throw new Error('移动到「失败」列前必须填写失败原因');
+        if (!reason) throw bizError('移动到「失败」列前必须填写失败原因');
       }
 
       const [rows] = await conn.query(
@@ -555,7 +600,7 @@ server.registerTool(
         conflict: true,
         message: conflictMessage(result.currentVersion, result.expectedVersion),
         currentVersion: result.currentVersion,
-        issue: (await fetchBoard()).find((i) => i.id === args.id),
+        issue: await fetchIssueById(args.id),
       });
     }
 
@@ -572,7 +617,7 @@ server.registerTool(
   },
   async (args) => {
     const [res] = await query('DELETE FROM issues WHERE id = ?', [args.id]);
-    if (!res.affectedRows) throw new Error('任务不存在或已被删除');
+    if (!res.affectedRows) throw bizError('任务不存在或已被删除');
     return ok({ deleted: true, id: args.id });
   }
 );
@@ -585,7 +630,24 @@ async function main() {
   await server.connect(transport);
   // 注意：诊断日志只能写 stderr，stdout 被 MCP 协议占用
   console.error('[cloudissue-mcp] data server ready (stdio)');
+
+  // HTTP 层优雅停机会 close() MCP client → stdin 关闭。
+  // 此时清空连接池并退出，避免子进程因持有池连接而僵死。
+  process.stdin.on('end', () => {
+    console.error('[cloudissue-mcp] stdin closed, shutting down');
+    closeDb().finally(() => process.exit(0));
+  });
+  process.stdin.resume();
 }
+
+// 兜底：意外异常直接退出（crash-only），由 HTTP 层的重连机制恢复
+process.on('uncaughtException', (err) => {
+  console.error('[cloudissue-mcp] uncaughtException:', err);
+  closeDb().finally(() => process.exit(1));
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[cloudissue-mcp] unhandledRejection:', err);
+});
 
 main().catch((err) => {
   console.error('[cloudissue-mcp] fatal:', err);
