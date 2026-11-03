@@ -1,6 +1,7 @@
 /**
  * 端到端集成测试：验证 HTTP → MCP → MySQL 全链路与全部业务规则。
- * 运行前需先启动服务：node server/index.js
+ * 运行前需先启动服务（认证套件会发起大量登录尝试，请调高认证限流）：
+ *   AUTH_RATE_LIMIT=10000 node server/index.js
  */
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:5173';
 
@@ -18,10 +19,12 @@ function check(name, cond, extra = '') {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(BASE + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (cookieJar) headers.Cookie = cookieJar;
+  const res = await fetch(BASE + path, { ...opts, headers });
+  // 极简 cookie jar：注册/登录/改密响应会下发新会话，自动接管
+  const setCookie = res.headers.get('set-cookie');
+  if (setCookie) cookieJar = setCookie.split(';')[0];
   let data = {};
   try {
     data = await res.json();
@@ -30,6 +33,8 @@ async function api(path, opts = {}) {
   }
   return { status: res.status, data };
 }
+
+let cookieJar = '';
 
 const post = (p, body) => api(p, { method: 'POST', body: JSON.stringify(body) });
 const put = (p, body) => api(p, { method: 'PUT', body: JSON.stringify(body) });
@@ -46,6 +51,83 @@ async function main() {
   check('健康检查通过', health.status === 200 && health.data.connected === true);
   check('确认经由 MCP 链路', health.data.viaMcp === true);
   check('连接的库为 issue_board', health.data.db === 'issue_board', health.data.db);
+
+  console.log('\n--- 1b. 认证与多用户（共享团队看板） ---');
+  // 未登录一律 401
+  const anonList = await api('/api/issues');
+  check('未登录读取看板返回 401', anonList.status === 401, JSON.stringify(anonList.data));
+  const anonCreate = await post('/api/issues', { title: '匿名' });
+  check('未登录新建任务返回 401', anonCreate.status === 401, JSON.stringify(anonCreate.data));
+
+  const uniq = Date.now().toString(36).slice(-6);
+  const USER_A = `it_a_${uniq}`;
+  const USER_B = `it_b_${uniq}`;
+
+  // 注册入参校验
+  const badName = await post('/api/auth/register', { username: 'x', password: 'password123' });
+  check('非法用户名被拒绝', badName.status === 400, JSON.stringify(badName.data));
+  const shortPwd = await post('/api/auth/register', { username: USER_A, password: 'short' });
+  check('过短密码被拒绝', shortPwd.status === 400, JSON.stringify(shortPwd.data));
+
+  const regA = await post('/api/auth/register', {
+    username: USER_A,
+    password: 'password123',
+    displayName: '集成用户A',
+  });
+  check('注册成功返回 201 与用户信息', regA.status === 201 && regA.data.user?.username === USER_A, JSON.stringify(regA.data));
+  check('注册后即持有会话', Boolean(cookieJar));
+
+  const dupReg = await post('/api/auth/register', { username: USER_A, password: 'password123' });
+  check('重复用户名被拒绝', dupReg.status === 400, JSON.stringify(dupReg.data));
+
+  const meA = await api('/api/auth/me');
+  check('me 返回当前用户', meA.status === 200 && meA.data.user?.username === USER_A, JSON.stringify(meA.data));
+
+  const badLogin = await post('/api/auth/login', { username: USER_A, password: 'wrong-pass-1' });
+  check('错误密码登录返回 401', badLogin.status === 401, JSON.stringify(badLogin.data));
+
+  // 登出 → me 401 → 重新登录
+  cookieJar = '';
+  const anonMe = await api('/api/auth/me');
+  check('登出后 me 返回 401', anonMe.status === 401, String(anonMe.status));
+  const loginA = await post('/api/auth/login', { username: USER_A, password: 'password123' });
+  check('重新登录成功', loginA.status === 200 && loginA.data.user?.username === USER_A, JSON.stringify(loginA.data));
+  const cookieA = cookieJar;
+
+  // 共享看板：用户 B 登录后读的是同一块板
+  const regB = await post('/api/auth/register', { username: USER_B, password: 'password123' });
+  check('注册第二个用户成功', regB.status === 201, JSON.stringify(regB.data));
+  const { data: listForB } = await api('/api/issues');
+  check('用户 B 登录后可读取同一块看板', (listForB.issues || []).length === 10, String((listForB.issues || []).length));
+
+  // 改密：旧会话吊销、新会话可用、新密码登录、旧密码失效
+  cookieJar = cookieA;
+  const cookieAOld = cookieJar;
+  const chg = await api('/api/auth/password', {
+    method: 'PUT',
+    body: JSON.stringify({ oldPassword: 'password123', newPassword: 'newpass123456' }),
+  });
+  check('改密成功', chg.status === 200, JSON.stringify(chg.data));
+  const cookieANew = cookieJar;
+
+  const wrongOld = await api('/api/auth/password', {
+    method: 'PUT',
+    body: JSON.stringify({ oldPassword: 'oops-wrong', newPassword: 'whatever123' }),
+  });
+  check('原密码不正确时改密被拒绝', wrongOld.status === 400, JSON.stringify(wrongOld.data));
+
+  cookieJar = cookieAOld;
+  const withOld = await api('/api/auth/me');
+  check('改密后旧会话立即失效', withOld.status === 401, String(withOld.status));
+  cookieJar = cookieANew;
+  const withNew = await api('/api/auth/me');
+  check('改密后新会话可用', withNew.status === 200, String(withNew.status));
+
+  cookieJar = '';
+  const oldPwdLogin = await post('/api/auth/login', { username: USER_A, password: 'password123' });
+  check('旧密码已不可登录', oldPwdLogin.status === 401, String(oldPwdLogin.status));
+  const relogin = await post('/api/auth/login', { username: USER_A, password: 'newpass123456' });
+  check('新密码可登录', relogin.status === 200, JSON.stringify(relogin.data));
 
   console.log('\n--- 2. 示例数据初始化 ---');
   const list0 = await api('/api/issues');
@@ -224,6 +306,29 @@ async function main() {
   const batchLog = failedOne.logs[failedOne.logs.length - 1];
   check('批量移动同样写入变更记录', batchLog.toStatus === 'failed', JSON.stringify(batchLog));
   check('变更记录带上批量填写的原因', batchLog.reason === '批量：依赖方接口整体不可用', batchLog.reason);
+
+  console.log('\n--- 13. 批量移动乐观锁（items 形态） ---');
+  // 三张卡已经历 新建(1) → planning(2) → failed(3)，版本 1 必然全部过期
+  const allStale = await post('/api/issues/batch/move', {
+    items: bIds.map((bid) => ({ id: bid, expectedVersion: 1 })),
+    toStatus: 'done',
+  });
+  check('批量移动版本全部过期时整体被拒', allStale.status === 400, JSON.stringify(allStale.data));
+  check('逐卡汇总冲突信息', (allStale.data.failed || []).length === 3, JSON.stringify(allStale.data.failed));
+  check('全部过期时没有任何卡片被移动', (allStale.data.moved ?? 0) === 0, String(allStale.data.moved));
+
+  // 一张带正确版本、一张过期：正确的成功、过期的进 failed 汇总
+  const { data: blNow } = await api('/api/issues');
+  const freshVersion = blNow.issues.find((i) => i.id === bIds[0])?.version;
+  const mixed = await post('/api/issues/batch/move', {
+    items: [
+      { id: bIds[0], expectedVersion: freshVersion },
+      { id: bIds[1], expectedVersion: 1 },
+    ],
+    toStatus: 'done',
+  });
+  check('混合版本时正确的卡片成功', mixed.status === 200 && mixed.data.moved === 1, JSON.stringify(mixed.data));
+  check('过期的卡片进入 failed 汇总', (mixed.data.failed || []).length === 1, JSON.stringify(mixed.data.failed));
 
   const badDel = await post('/api/issues/batch/delete', { ids: [] });
   check('空 id 列表的批量删除被拒绝', badDel.status === 400, JSON.stringify(badDel.data));

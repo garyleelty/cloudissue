@@ -29,7 +29,12 @@ import {
   cancelPendingReason,
   hasPendingReason,
 } from './modals.js';
-import { STATUSES, STATUS_LABELS, FAIL_STATUS } from '../../shared/constants.js';
+import {
+  STATUSES,
+  STATUS_LABELS,
+  FAIL_STATUS,
+  MOBILE_BREAKPOINT,
+} from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
@@ -46,7 +51,8 @@ async function load() {
     syncDropdowns();
     notify();
   } catch (err) {
-    toast(`加载失败：${err.message}`, 'error');
+    // 401 已由 ci:unauthorized 统一切到登录视图，这里不重复打扰
+    if (err.status !== 401) toast(`加载失败：${err.message}`, 'error');
   }
 }
 
@@ -63,8 +69,89 @@ async function checkHealth() {
   }
 }
 
+// ------------------------------------------------------------------
+// 认证视图：登录 / 注册 / 登出
+// ------------------------------------------------------------------
+const authView = $('#authView');
+let authMode = 'login';
+
+function showAuth() {
+  authView.hidden = false;
+  $('#userChip').hidden = true;
+  $('#btnLogout').hidden = true;
+  $('#authError').hidden = true;
+  authView.querySelector('[name="username"]')?.focus();
+}
+
+function showBoard(user) {
+  authView.hidden = true;
+  const chip = $('#userChip');
+  chip.textContent = user.displayName || user.username;
+  chip.title = `@${user.username}`;
+  chip.hidden = false;
+  $('#btnLogout').hidden = false;
+  load();
+}
+
+function bindAuthView() {
+  const form = $('#authForm');
+  const err = $('#authError');
+  const submit = $('#authSubmit');
+
+  const setMode = (mode) => {
+    authMode = mode;
+    $('#tabLogin').classList.toggle('active', mode === 'login');
+    $('#tabRegister').classList.toggle('active', mode === 'register');
+    $('#tabLogin').setAttribute('aria-selected', String(mode === 'login'));
+    $('#tabRegister').setAttribute('aria-selected', String(mode === 'register'));
+    submit.textContent = mode === 'login' ? '登录' : '注册';
+    form.password.setAttribute('autocomplete', mode === 'login' ? 'current-password' : 'new-password');
+    err.hidden = true;
+  };
+  $('#tabLogin').addEventListener('click', () => setMode('login'));
+  $('#tabRegister').addEventListener('click', () => setMode('register'));
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.hidden = true;
+    const username = form.username.value.trim();
+    const password = form.password.value;
+    if (!username || !password) {
+      err.textContent = '请输入用户名和密码';
+      err.hidden = false;
+      return;
+    }
+
+    submit.disabled = true;
+    try {
+      const payload = { username, password };
+      const res = authMode === 'login' ? await api.login(payload) : await api.register(payload);
+      toast(authMode === 'login' ? '欢迎回来' : '注册成功', 'success');
+      showBoard(res.user);
+    } catch (e2) {
+      err.textContent = e2.message;
+      err.hidden = false;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+}
+
 function bindGlobalEvents() {
   $('#btnNew').addEventListener('click', () => openForm(null, 'backlog'));
+
+  $('#btnLogout').addEventListener('click', async () => {
+    try {
+      await api.logout();
+    } catch {
+      /* 会话可能已失效，本地照常登出 */
+    }
+    clearSelection();
+    resetFilters();
+    $('#fKeyword').value = '';
+    showAuth();
+    toast('已退出登录');
+  });
 
   $('#btnClear').addEventListener('click', () => {
     resetFilters();
@@ -146,7 +233,7 @@ function bindGlobalEvents() {
   board.addEventListener(
     'scroll',
     () => {
-      if (window.innerWidth > 860) return;
+      if (window.innerWidth > MOBILE_BREAKPOINT) return;
       const center = board.scrollLeft + board.clientWidth / 2;
       let best = null;
       let bestDist = Infinity;
@@ -201,7 +288,12 @@ function bindBatchBar() {
     }
 
     try {
-      const res = await api.batchMove(ids, { toStatus, failReason });
+      // 逐卡携带乐观锁版本号：并发下冲突的卡片单独汇总，不被静默覆盖
+      const items = ids.map((id) => {
+        const issue = state.issues.find((i) => i.id === id);
+        return { id, expectedVersion: issue?.version };
+      });
+      const res = await api.batchMove(items, { toStatus, failReason });
       const skipped = res?.failed?.length ?? 0;
       const moved = res?.moved ?? ids.length;
       toast(
@@ -228,11 +320,21 @@ async function init() {
   initCrossTabSync(load);
   bindGlobalEvents();
   bindBatchBar();
+  bindAuthView();
+
+  // 任意请求 401（会话过期/被吊销）→ 统一切回登录视图
+  window.addEventListener('ci:unauthorized', showAuth);
 
   onChange(() => render.renderBoard());
 
+  // 健康状态周期性刷新，链路断了状态灯能自己翻红
   await checkHealth();
-  await load();
+  setInterval(checkHealth, 30_000);
+
+  // 先探测登录态：未登录只亮登录视图，不带出看板数据的 401 报错
+  const me = await api.me().then((r) => r.user).catch(() => null);
+  if (me) showBoard(me);
+  else showAuth();
 }
 
 init();

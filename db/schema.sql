@@ -46,6 +46,21 @@ EXECUTE ci_stmt;
 DEALLOCATE PREPARE ci_stmt;
 
 -- ------------------------------------------------------------
+-- 1.5 用户表（认证身份；看板为共享模式，任务不挂归属）
+--     token_version：密码修改时 +1，使所有旧 JWT 立即失效
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `users` (
+  `id`            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `username`      VARCHAR(32)     NOT NULL                COMMENT '登录名，唯一',
+  `display_name`  VARCHAR(64)     NOT NULL DEFAULT ''     COMMENT '展示名',
+  `password_hash` VARCHAR(255)    NOT NULL                COMMENT 'bcrypt 哈希',
+  `token_version` INT UNSIGNED    NOT NULL DEFAULT 0      COMMENT 'JWT 吊销版本号',
+  `created_at`    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_users_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户';
+
+-- ------------------------------------------------------------
 -- 2. 标签表（一个任务可有多个标签）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `issue_tags` (

@@ -623,6 +623,111 @@ server.registerTool(
 );
 
 // ------------------------------------------------------------------
+// 用户（认证身份）。口令哈希在 HTTP 层完成，这里只负责存取。
+// ------------------------------------------------------------------
+
+/** users 行 → 对外 JSON（含 password_hash，仅供 HTTP 层校验，不出 HTTP↔MCP 边界） */
+function shapeUser(u) {
+  return {
+    id: u.id,
+    username: u.username,
+    displayName: u.display_name || '',
+    passwordHash: u.password_hash,
+    tokenVersion: Number(u.token_version ?? 0),
+    createdAt: toIsoStr(u.created_at),
+  };
+}
+
+// 8) 创建用户
+server.registerTool(
+  'user_create',
+  {
+    description: '创建一个用户（username 唯一）',
+    inputSchema: {
+      username: z.string().min(1).max(32),
+      displayName: z.string().max(64).optional().default(''),
+      passwordHash: z.string().min(1).max(255),
+    },
+  },
+  async (args) => {
+    try {
+      const [res] = await query(
+        'INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)',
+        [args.username, args.displayName, args.passwordHash]
+      );
+      return ok({ created: true, id: res.insertId });
+    } catch (err) {
+      if (err && err.code === 'ER_DUP_ENTRY') {
+        throw bizError('用户名已被占用');
+      }
+      throw err;
+    }
+  }
+);
+
+// 9) 按用户名取用户（登录用）
+server.registerTool(
+  'user_get_by_username',
+  { description: '按用户名查找用户；不存在返回 user: null', inputSchema: { username: z.string().min(1).max(32) } },
+  async (args) => {
+    const [[row]] = await query('SELECT * FROM users WHERE username = ?', [args.username]);
+    return ok({ user: row ? shapeUser(row) : null });
+  }
+);
+
+// 10) 按 id 取用户（鉴权中间件用：每次请求校验 token_version）
+server.registerTool(
+  'user_get_by_id',
+  { description: '按 id 查找用户；不存在返回 user: null', inputSchema: { id: z.number().int().positive() } },
+  async (args) => {
+    const [[row]] = await query('SELECT * FROM users WHERE id = ?', [args.id]);
+    return ok({ user: row ? shapeUser(row) : null });
+  }
+);
+
+// 11) 吊销版本号 +1（修改密码后使所有旧 JWT 失效）
+server.registerTool(
+  'user_bump_token_version',
+  { description: '把用户的 token_version +1，返回新版本号', inputSchema: { id: z.number().int().positive() } },
+  async (args) => {
+    const [res] = await query(
+      'UPDATE users SET token_version = token_version + 1 WHERE id = ?',
+      [args.id]
+    );
+    if (!res.affectedRows) throw bizError('用户不存在或已被删除');
+    const [[{ v }]] = await query('SELECT token_version AS v FROM users WHERE id = ?', [args.id]);
+    return ok({ tokenVersion: Number(v) });
+  }
+);
+
+// 12) 更新口令哈希（可选同时 bump token_version，同一事务内保证一致）
+server.registerTool(
+  'user_update_auth',
+  {
+    description: '更新用户口令哈希；bumpTokenVersion 为真时同步 +1 吊销旧会话',
+    inputSchema: {
+      id: z.number().int().positive(),
+      passwordHash: z.string().min(1).max(255),
+      bumpTokenVersion: z.boolean().optional().default(false),
+    },
+  },
+  async (args) => {
+    const { tokenVersion } = await withTransaction(async (conn) => {
+      const [res] = await conn.query(
+        args.bumpTokenVersion
+          ? 'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?'
+          : 'UPDATE users SET password_hash = ? WHERE id = ?',
+        args.bumpTokenVersion ? [args.passwordHash, args.id] : [args.passwordHash, args.id]
+      );
+      if (!res.affectedRows) throw bizError('用户不存在或已被删除');
+      const [[row]] = await conn.query('SELECT token_version AS tv FROM users WHERE id = ?', [args.id]);
+      return { tokenVersion: Number(row.tv) };
+    });
+    return ok({ updated: true, tokenVersion });
+  }
+);
+
+// ------------------------------------------------------------------
 // 启动
 // ------------------------------------------------------------------
 async function main() {

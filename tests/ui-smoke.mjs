@@ -45,6 +45,7 @@ function mkIssue(id, over = {}) {
     dueDate: ymd(5),
     status: 'backlog',
     position: id,
+    version: 1,
     createdAt: iso(id * 1000),
     updatedAt: iso(id * 1000),
     logs: [{ id: id * 10, fromStatus: '', toStatus: 'backlog', reason: '', changedAt: iso(id * 1000) }],
@@ -88,6 +89,13 @@ globalThis.fetch = async (url) => {
   const u = String(url);
   if (u.includes('/api/health')) {
     return { ok: true, status: 200, json: async () => ({ ok: true, connected: true, db: 'issue_board' }) };
+  }
+  if (u.includes('/api/auth/me')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ user: { id: 1, username: 'tester', displayName: '测试用户' } }),
+    };
   }
   if (u.includes('/api/issues')) {
     return { ok: true, status: 200, json: async () => ({ issues: FIXTURE }) };
@@ -412,9 +420,9 @@ console.log('\n--- 14. 批量选择与操作条 ---');
   // 批量移动
   let moveArgs = null;
   const origBatchMove = apiMod.api.batchMove;
-  apiMod.api.batchMove = async (ids, payload) => {
-    moveArgs = { ids, ...payload };
-    return { moved: ids.length, ids, failed: [] };
+  apiMod.api.batchMove = async (items, payload) => {
+    moveArgs = { items, ...payload };
+    return { moved: items.length, ids: items.map((it) => it.id), failed: [] };
   };
   $('#batchStatus').value = 'done';
   $('#batchMove').click();
@@ -423,8 +431,13 @@ console.log('\n--- 14. 批量选择与操作条 ---');
   check('批量移动调用了批量接口', moveArgs !== null, JSON.stringify(moveArgs));
   check(
     '批量移动带上全部选中 id',
-    JSON.stringify(moveArgs?.ids) === JSON.stringify([1, 2]),
-    JSON.stringify(moveArgs?.ids)
+    JSON.stringify(moveArgs?.items?.map((it) => it.id)) === JSON.stringify([1, 2]),
+    JSON.stringify(moveArgs?.items)
+  );
+  check(
+    '批量移动逐卡携带乐观锁版本号',
+    moveArgs?.items?.every((it) => Number.isInteger(it.expectedVersion)) === true,
+    JSON.stringify(moveArgs?.items)
   );
   check('批量移动目标列取自下拉', moveArgs?.toStatus === 'done', String(moveArgs?.toStatus));
   check('成功后清空勾选', s.selection.size === 0, String(s.selection.size));
@@ -458,6 +471,30 @@ console.log('\n--- 14. 批量选择与操作条 ---');
   $('#batchCancel').click();
   await wait(20);
   check('取消选择清空勾选', s.selection.size === 0, String(s.selection.size));
+}
+
+// ------------------------------------------------------------------
+// CSS 静态回归：带 display 值的类不能让 [hidden] 失效。
+// jsdom 不加载外部样式表、无布局引擎，computed style 测不到这类问题，
+// 因此做源码级断言。此前已两次踩坑（.modal-root / .fm-row 覆盖
+// UA 的 [hidden]{display:none}），新增同名坑时这里会红。
+// ------------------------------------------------------------------
+console.log('\n--- CSS 回归：[hidden] 与 display 规则 ---');
+const stylesCss = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+const hiddenGuards = [
+  { selector: '.modal-root', display: 'grid' },
+  { selector: '.fm-row', display: 'flex' },
+  { selector: '.batch-bar', display: 'flex' },
+];
+for (const { selector, display } of hiddenGuards) {
+  const esc = selector.replace('.', '\\.');
+  const baseRule = new RegExp(`${esc}\\s*\\{[^}]*display:\\s*${display}`, 's');
+  if (baseRule.test(stylesCss)) {
+    const guard = new RegExp(`${esc}\\[hidden\\]\\s*\\{[^}]*display:\\s*none`, 's');
+    check(`${selector}[hidden] 存在对应隐藏规则`, guard.test(stylesCss));
+  } else {
+    check(`${selector} 未设置 display（无需补救规则）`, true);
+  }
 }
 
 console.log(`\n=====================================`);

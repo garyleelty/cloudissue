@@ -28,3 +28,9 @@ export const FAIL_STATUS = 'failed';
 
 /** 拖入「失败」列但取消/未填写原因时的统一提示 */
 export const MSG_MOVE_CANCELLED_NO_REASON = '已取消移动：未填写失败原因，任务保留在原列';
+
+/**
+ * 移动端断点（px）。styles.css 的 @media (max-width: 860px) 与此对应，
+ * 改动时两处必须同步（CSS 无法引用 JS 常量）。
+ */
+export const MOBILE_BREAKPOINT = 860;

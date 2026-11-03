@@ -27,6 +27,8 @@
         <span id="healthDot" class="health" title="数据链路状态">
           <i class="dot"></i><span id="healthText">连接中…</span>
         </span>
+        <span id="userChip" class="user-chip" hidden></span>
+        <button id="btnLogout" class="btn btn-ghost" type="button" hidden>退出</button>
         <button id="btnNew" class="btn btn-primary" type="button">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
           新建任务
@@ -93,6 +95,34 @@
       <button id="batchMove" class="btn btn-primary" type="button">移动</button>
       <button id="batchDelete" class="btn btn-danger" type="button">删除</button>
       <button id="batchCancel" class="btn btn-ghost" type="button">取消选择</button>
+    </div>
+  </div>
+
+  <!-- ===================== 登录 / 注册 ===================== -->
+  <div id="authView" class="auth-view" hidden>
+    <div class="auth-card">
+      <h2 class="auth-title">CloudIssue</h2>
+      <p class="auth-subtitle">登录后开始管理你的任务看板</p>
+
+      <div class="auth-tabs" role="tablist" aria-label="登录或注册">
+        <button id="tabLogin" class="auth-tab active" type="button" role="tab" aria-selected="true">登录</button>
+        <button id="tabRegister" class="auth-tab" type="button" role="tab" aria-selected="false">注册</button>
+      </div>
+
+      <form id="authForm" novalidate>
+        <label class="fm-row">
+          <span class="fm-label">用户名</span>
+          <input name="username" type="text" maxlength="32" autocomplete="username"
+                 placeholder="3-32 位字母 / 数字 / 下划线" required />
+        </label>
+        <label class="fm-row">
+          <span class="fm-label">密码</span>
+          <input name="password" type="password" maxlength="72" autocomplete="current-password"
+                 placeholder="至少 8 位" required />
+        </label>
+        <p class="form-error" id="authError" hidden></p>
+        <button id="authSubmit" class="btn btn-primary btn-block" type="submit">登录</button>
+      </form>
     </div>
   </div>
 

@@ -12,12 +12,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import express from 'express';
-import pino from 'pino';
-import pinoHttp from 'pino-http';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
+import { logger } from './logger.js';
+import { callTool, closeMcp } from './mcp-client.js';
+import { authRouter, authRequired } from './auth.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(here, '..');
@@ -30,6 +31,8 @@ const EnvSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
+  API_RATE_LIMIT: z.coerce.number().int().positive().default(300),
+  AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(20),
 });
 const parsedEnv = EnvSchema.safeParse(process.env);
 if (!parsedEnv.success) {
@@ -38,125 +41,68 @@ if (!parsedEnv.success) {
   }
   process.exit(1);
 }
-const { PORT, LOG_LEVEL } = parsedEnv.data;
-
-const MCP_ENTRY = path.join(PROJECT_ROOT, 'mcp-server', 'index.js');
-
-// ------------------------------------------------------------------
-// 结构化日志（JSON 行）。MCP 子进程自行写 stderr，这里只管 HTTP 层
-// ------------------------------------------------------------------
-const logger = pino({ level: LOG_LEVEL, base: { svc: 'cloudissue-http' } });
-
-// ------------------------------------------------------------------
-// MCP Client（单例，惰性连接；子进程死亡后自动失效、下次调用重连）
-// ------------------------------------------------------------------
-let mcpClientPromise = null;
-
-function connectMcp() {
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [MCP_ENTRY],
-    cwd: PROJECT_ROOT,
-    env: {
-      ...process.env,
-      DB_HOST: process.env.DB_HOST || '127.0.0.1',
-      DB_PORT: process.env.DB_PORT || '3306',
-      DB_USER: process.env.DB_USER || 'root',
-      DB_PASSWORD: process.env.DB_PASSWORD || '',
-      DB_NAME: process.env.DB_NAME || 'issue_board',
-    },
-    stderr: 'inherit',
-  });
-
-  const client = new Client({ name: 'cloudissue-http', version: '1.0.0' });
-  // 子进程崩溃/退出时必须失效缓存，否则所有后续调用都打在一具尸体上
-  client.onclose = () => {
-    if (mcpClientPromise) {
-      logger.warn('mcp data server connection closed, 将在下次调用时重连');
-      mcpClientPromise = null;
-    }
-  };
-  client.onerror = (err) => {
-    logger.error({ err: err.message }, 'mcp client transport error');
-  };
-  return client
-    .connect(transport)
-    .then(() => client); // connect() 的返回值不是 client，必须显式回传
-}
-
-function getMcpClient() {
-  if (!mcpClientPromise) {
-    mcpClientPromise = connectMcp().catch((err) => {
-      // 连接失败时清空缓存，允许下一次请求重试
-      mcpClientPromise = null;
-      throw err;
-    });
-  }
-  return mcpClientPromise;
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * 调用一个 MCP tool 并返回解析后的 JSON。
- * - 业务校验失败（McpError InvalidParams）→ 400 + 原始文案；
- * - 子进程断连 → 失效缓存并重试一次；
- * - 其余一律视为系统故障 → 502 通用文案，细节只进日志。
- */
-async function callTool(name, args = {}, attempt = 0) {
-  let res;
-  try {
-    const client = await getMcpClient();
-    res = await client.callTool({ name, arguments: args });
-  } catch (err) {
-    const transient =
-      err instanceof McpError && err.code === ErrorCode.ConnectionClosed
-        ? true
-        : /closed|not connected/i.test(String(err?.message));
-    if (transient && attempt < 1) {
-      mcpClientPromise = null;
-      await sleep(200);
-      return callTool(name, args, attempt + 1);
-    }
-    if (err instanceof McpError && err.code === ErrorCode.InvalidParams) {
-      throw Object.assign(new Error(err.message), { status: 400 });
-    }
-    logger.error({ err: err.message, tool: name }, 'mcp call failed');
-    throw Object.assign(new Error('数据服务暂时不可用，请稍后重试'), { status: 502 });
-  }
-
-  if (res.isError) {
-    const text = res.content?.map((c) => c.text).join('\n') || '数据操作失败';
-    // SDK 会把 tool 内抛出的 McpError 转成 isError 文本（带 "MCP error <code>:" 前缀）
-    const m = /^MCP error (-?\d+): (.*)$/s.exec(text);
-    if (m && Number(m[1]) === ErrorCode.InvalidParams) {
-      // 业务校验失败：文案面向用户，直接透出
-      throw Object.assign(new Error(m[2]), { status: 400 });
-    }
-    logger.error({ tool: name, detail: text }, 'mcp tool reported error');
-    throw Object.assign(new Error('数据服务暂时不可用，请稍后重试'), { status: 502 });
-  }
-
-  const raw = res.content?.[0]?.text;
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    logger.error({ tool: name }, 'mcp tool returned non-JSON payload');
-    return {};
-  }
-}
+const { PORT, API_RATE_LIMIT, AUTH_RATE_LIMIT } = parsedEnv.data;
 
 // ------------------------------------------------------------------
 // Express 应用
 // ------------------------------------------------------------------
 const app = express();
+
+// 安全头。本应用同源部署：CSP 允许 self 脚本/样式 + data: 图标
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:'],
+        connectSrc: ["'self'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
+
 app.use(express.json({ limit: '1mb' }));
-app.use(pinoHttp({ logger, genReqId: () => crypto.randomUUID() }));
+app.use(cookieParser());
+
+// 反向代理部署时设 TRUST_PROXY=true，限流才能按真实客户端 IP 计数
+if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
+
+// 请求日志（含 requestId，错误中间件会回带）
+app.use((req, res, next) => {
+  req.id = crypto.randomUUID();
+  res.setHeader('x-request-id', req.id);
+  next();
+});
 
 // 共享枚举常量直接以 ESM 形式提供给前端，避免前后端文案不一致
 app.use('/shared', express.static(path.join(PROJECT_ROOT, 'shared')));
 app.use(express.static(path.join(PROJECT_ROOT, 'public')));
+
+// 限流：全局 API 从宽、认证入口从严（防爆破/防撞库）。
+// 集成测试与 CI 通过 AUTH_RATE_LIMIT/API_RATE_LIMIT 调高阈值。
+const apiLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: API_RATE_LIMIT,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: '请求过于频繁，请稍后再试' },
+});
+const authLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: AUTH_RATE_LIMIT,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: '尝试次数过多，请 15 分钟后再试' },
+});
+
+app.use('/api', apiLimiter);
+app.use('/api/auth', authLimiter, authRouter);
+
+// 业务接口一律先过鉴权（/api/health 保持公开，供容器 healthcheck）
+app.use('/api/issues', authRequired);
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
 
@@ -263,13 +209,18 @@ app.post('/api/issues/batch/move', asyncHandler(async (req, res) => {
 
   for (const { id, expectedVersion } of items) {
     try {
-      await callTool('issue_move', {
+      const data = await callTool('issue_move', {
         id,
         toStatus,
         afterId,
         failReason: failReason ?? '',
         expectedVersion,
       });
+      // 冲突不是异常：MCP 以正常结果返回 conflict，需单独归入 failed
+      if (data.conflict) {
+        failed.push({ id, error: data.message || '任务已被其他人修改，请刷新后重试' });
+        continue;
+      }
       moved.push(id);
       afterId = id; // 依次接在前一张之后，保持勾选顺序
     } catch (err) {
@@ -366,12 +317,8 @@ async function start() {
     shuttingDown = true;
     logger.info({ signal }, '收到退出信号，开始优雅停机');
     server.close(async () => {
-      try {
-        const client = await mcpClientPromise?.catch(() => null);
-        await client?.close();
-      } finally {
-        process.exit(0);
-      }
+      await closeMcp();
+      process.exit(0);
     });
     // 兜底：连接挂死也要退出，交给进程管理器重启
     setTimeout(() => process.exit(0), 3000).unref();

@@ -58,6 +58,10 @@
 
 * { box-sizing: border-box; }
 
+/* [hidden] 语义优先：任何组件样式（display: flex/grid/…）都不得压过隐藏态。
+   此前 .modal-root / .fm-row / .btn 都发生过 display 覆盖 hidden 的事故。 */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -909,3 +913,88 @@ body:has(#batchBar:not([hidden])) .toast-root { bottom: 96px; }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* ==========================================================================
+   认证（登录 / 注册）
+   ========================================================================== */
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 160px;
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-block { width: 100%; }
+
+.auth-view {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  animation: fade 0.2s var(--ease);
+}
+
+.auth-card {
+  width: min(400px, calc(100vw - 32px));
+  background: var(--surface);
+  border-radius: var(--r-xl);
+  box-shadow: var(--sh-4);
+  padding: 32px 28px 28px;
+}
+
+.auth-title {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+
+.auth-subtitle {
+  margin: 0 0 22px;
+  font-size: 13px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 18px;
+  border-radius: var(--r-md);
+  background: var(--surface-sunken);
+}
+
+.auth-tab {
+  flex: 1;
+  padding: 8px 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.2s var(--ease), color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+.auth-tab.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--sh-1);
+}
+
+#authForm .fm-row { margin-bottom: 14px; }
+#authForm .form-error { margin: 2px 0 12px; }
