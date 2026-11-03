@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: issue_board
+          MYSQL_USER: issue
+          MYSQL_PASSWORD: issue_pass
+          MYSQL_ROOT_PASSWORD: ci_root_pass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci_root_pass"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '3306'
+      DB_USER: issue
+      DB_PASSWORD: issue_pass
+      DB_NAME: issue_board
+      JWT_SECRET: ci-only-secret-not-for-production-use
+      # 认证套件会发起大量登录尝试
+      AUTH_RATE_LIMIT: '10000'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: 前端冒烟（jsdom，离线）
+        run: npm run test:ui
+
+      - name: MCP 链路冒烟（离线）
+        run: npm run test:mcp
+
+      - name: 集成测试（HTTP → MCP → MySQL 全链路）
+        run: |
+          node server/index.js > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:5173/api/health >/dev/null && break
+            sleep 1
+          done
+          npm test
+
+      - name: 输出服务日志（仅失败时）
+        if: failure()
+        run: cat server.log
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建镜像（验证 Dockerfile 可用）
+        run: docker build -t cloudissue:ci .

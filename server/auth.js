@@ -54,11 +54,9 @@ const AuthSchema = z.object({
 const publicUser = (u) => ({ id: u.id, username: u.username, displayName: u.displayName });
 
 function setSessionCookie(res, user) {
-  const token = jwt.sign(
-    { sub: user.id, username: user.username, tv: user.tokenVersion },
-    JWT_SECRET,
-    { expiresIn: JWT_EXPIRES }
-  );
+  const token = jwt.sign({ sub: user.id, username: user.username, tv: user.tokenVersion }, JWT_SECRET, {
+    expiresIn: JWT_EXPIRES,
+  });
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: 'lax',
@@ -103,7 +101,10 @@ authRouter.post('/register', async (req, res, next) => {
       return res.status(400).json({ error: parsedBody.error.issues[0].message });
     }
     const { username, password } = parsedBody.data;
-    const displayName = String(req.body?.displayName || '').trim().slice(0, 64) || username;
+    const displayName =
+      String(req.body?.displayName || '')
+        .trim()
+        .slice(0, 64) || username;
 
     const { user: existing } = await callTool('user_get_by_username', { username });
     if (existing) return res.status(400).json({ error: '用户名已被占用' });

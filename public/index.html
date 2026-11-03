@@ -1,239 +1,358 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>CloudIssue · 任务看板</title>
-  <link rel="stylesheet" href="/styles.css" />
-</head>
-<body>
-  <!-- ===================== 顶栏 ===================== -->
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="7" height="18" rx="2"></rect>
-            <rect x="14" y="3" width="7" height="11" rx="2"></rect>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>CloudIssue · 任务看板</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- ===================== 顶栏 ===================== -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3" y="3" width="7" height="18" rx="2"></rect>
+              <rect x="14" y="3" width="7" height="11" rx="2"></rect>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <h1>CloudIssue</h1>
+            <p>任务看板 · 状态流转跟踪</p>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <span id="healthDot" class="health" title="数据链路状态">
+            <i class="dot"></i><span id="healthText">连接中…</span>
+          </span>
+          <span id="userChip" class="user-chip" hidden></span>
+          <button id="btnLogout" class="btn btn-ghost" type="button" hidden>退出</button>
+          <button id="btnNew" class="btn btn-primary" type="button">
+            <svg
+              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            新建任务
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ===================== 筛选栏 ===================== -->
+    <section class="filters" aria-label="任务筛选">
+      <div class="filters-inner">
+        <div class="field field-search">
+          <svg
+            class="field-icon"
+            viewBox="0 0 24 24"
+            width="15"
+            height="15"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
           </svg>
+          <input id="fKeyword" type="search" placeholder="搜索标题或描述…" autocomplete="off" />
         </div>
-        <div class="brand-text">
-          <h1>CloudIssue</h1>
-          <p>任务看板 · 状态流转跟踪</p>
+
+        <div class="dropdown" data-filter="priority">
+          <button class="btn btn-ghost drop-trigger" type="button" aria-expanded="false">
+            <span class="drop-label">优先级</span>
+            <span class="drop-count" data-count="priority"></span>
+            <svg
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          <div class="drop-panel" id="panelPriority" role="group"></div>
         </div>
-      </div>
 
-      <div class="topbar-actions">
-        <span id="healthDot" class="health" title="数据链路状态">
-          <i class="dot"></i><span id="healthText">连接中…</span>
-        </span>
-        <span id="userChip" class="user-chip" hidden></span>
-        <button id="btnLogout" class="btn btn-ghost" type="button" hidden>退出</button>
-        <button id="btnNew" class="btn btn-primary" type="button">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-          新建任务
-        </button>
+        <div class="dropdown" data-filter="tag">
+          <button class="btn btn-ghost drop-trigger" type="button" aria-expanded="false">
+            <span class="drop-label">标签</span>
+            <span class="drop-count" data-count="tag"></span>
+            <svg
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          <div class="drop-panel" id="panelTag" role="group"></div>
+        </div>
+
+        <div class="dropdown" data-filter="assignee">
+          <button class="btn btn-ghost drop-trigger" type="button" aria-expanded="false">
+            <span class="drop-label">负责人</span>
+            <span class="drop-count" data-count="assignee"></span>
+            <svg
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          <div class="drop-panel" id="panelAssignee" role="group"></div>
+        </div>
+
+        <button id="btnClear" class="btn btn-ghost btn-clear" type="button">清空筛选</button>
+      </div>
+    </section>
+
+    <!-- ===================== 移动端列切换 ===================== -->
+    <nav id="colTabs" class="col-tabs" aria-label="列切换"></nav>
+
+    <!-- ===================== 看板 ===================== -->
+    <main id="board" class="board" aria-label="任务看板"></main>
+
+    <!-- ===================== 批量操作条 ===================== -->
+    <div id="batchBar" class="batch-bar" hidden>
+      <span class="batch-count" id="batchCount">已选 0 项</span>
+      <div class="batch-actions">
+        <label class="batch-pick">
+          <span>移动到</span>
+          <select id="batchStatus" class="batch-select" aria-label="批量移动到的列"></select>
+        </label>
+        <button id="batchMove" class="btn btn-primary" type="button">移动</button>
+        <button id="batchDelete" class="btn btn-danger" type="button">删除</button>
+        <button id="batchCancel" class="btn btn-ghost" type="button">取消选择</button>
       </div>
     </div>
-  </header>
 
-  <!-- ===================== 筛选栏 ===================== -->
-  <section class="filters" aria-label="任务筛选">
-    <div class="filters-inner">
-      <div class="field field-search">
-        <svg class="field-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
-        </svg>
-        <input id="fKeyword" type="search" placeholder="搜索标题或描述…" autocomplete="off" />
-      </div>
+    <!-- ===================== 登录 / 注册 ===================== -->
+    <div id="authView" class="auth-view" hidden>
+      <div class="auth-card">
+        <h2 class="auth-title">CloudIssue</h2>
+        <p class="auth-subtitle">登录后开始管理你的任务看板</p>
 
-      <div class="dropdown" data-filter="priority">
-        <button class="btn btn-ghost drop-trigger" type="button" aria-expanded="false">
-          <span class="drop-label">优先级</span>
-          <span class="drop-count" data-count="priority"></span>
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-        </button>
-        <div class="drop-panel" id="panelPriority" role="group"></div>
-      </div>
+        <div class="auth-tabs" role="tablist" aria-label="登录或注册">
+          <button id="tabLogin" class="auth-tab active" type="button" role="tab" aria-selected="true">
+            登录
+          </button>
+          <button id="tabRegister" class="auth-tab" type="button" role="tab" aria-selected="false">
+            注册
+          </button>
+        </div>
 
-      <div class="dropdown" data-filter="tag">
-        <button class="btn btn-ghost drop-trigger" type="button" aria-expanded="false">
-          <span class="drop-label">标签</span>
-          <span class="drop-count" data-count="tag"></span>
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-        </button>
-        <div class="drop-panel" id="panelTag" role="group"></div>
-      </div>
-
-      <div class="dropdown" data-filter="assignee">
-        <button class="btn btn-ghost drop-trigger" type="button" aria-expanded="false">
-          <span class="drop-label">负责人</span>
-          <span class="drop-count" data-count="assignee"></span>
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-        </button>
-        <div class="drop-panel" id="panelAssignee" role="group"></div>
-      </div>
-
-      <button id="btnClear" class="btn btn-ghost btn-clear" type="button">清空筛选</button>
-    </div>
-  </section>
-
-  <!-- ===================== 移动端列切换 ===================== -->
-  <nav id="colTabs" class="col-tabs" aria-label="列切换"></nav>
-
-  <!-- ===================== 看板 ===================== -->
-  <main id="board" class="board" aria-label="任务看板"></main>
-
-  <!-- ===================== 批量操作条 ===================== -->
-  <div id="batchBar" class="batch-bar" hidden>
-    <span class="batch-count" id="batchCount">已选 0 项</span>
-    <div class="batch-actions">
-      <label class="batch-pick">
-        <span>移动到</span>
-        <select id="batchStatus" class="batch-select" aria-label="批量移动到的列"></select>
-      </label>
-      <button id="batchMove" class="btn btn-primary" type="button">移动</button>
-      <button id="batchDelete" class="btn btn-danger" type="button">删除</button>
-      <button id="batchCancel" class="btn btn-ghost" type="button">取消选择</button>
-    </div>
-  </div>
-
-  <!-- ===================== 登录 / 注册 ===================== -->
-  <div id="authView" class="auth-view" hidden>
-    <div class="auth-card">
-      <h2 class="auth-title">CloudIssue</h2>
-      <p class="auth-subtitle">登录后开始管理你的任务看板</p>
-
-      <div class="auth-tabs" role="tablist" aria-label="登录或注册">
-        <button id="tabLogin" class="auth-tab active" type="button" role="tab" aria-selected="true">登录</button>
-        <button id="tabRegister" class="auth-tab" type="button" role="tab" aria-selected="false">注册</button>
-      </div>
-
-      <form id="authForm" novalidate>
-        <label class="fm-row">
-          <span class="fm-label">用户名</span>
-          <input name="username" type="text" maxlength="32" autocomplete="username"
-                 placeholder="3-32 位字母 / 数字 / 下划线" required />
-        </label>
-        <label class="fm-row">
-          <span class="fm-label">密码</span>
-          <input name="password" type="password" maxlength="72" autocomplete="current-password"
-                 placeholder="至少 8 位" required />
-        </label>
-        <p class="form-error" id="authError" hidden></p>
-        <button id="authSubmit" class="btn btn-primary btn-block" type="submit">登录</button>
-      </form>
-    </div>
-  </div>
-
-  <!-- ===================== 弹窗 ===================== -->
-  <div id="modalRoot" class="modal-root" hidden>
-    <div class="modal-backdrop" data-close="1"></div>
-
-    <!-- 新建 / 编辑 -->
-    <div class="modal" id="modalForm" hidden role="dialog" aria-modal="true" aria-labelledby="formTitle">
-      <header class="modal-head">
-        <h2 id="formTitle">新建任务</h2>
-        <button class="icon-btn" type="button" data-close="1" aria-label="关闭">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
-        </button>
-      </header>
-      <form id="issueForm" class="modal-body" novalidate>
-        <label class="fm-row">
-          <span class="fm-label">标题 <em>*</em></span>
-          <input name="title" type="text" maxlength="255" required placeholder="一句话描述这个任务" />
-        </label>
-
-        <label class="fm-row">
-          <span class="fm-label">描述</span>
-          <textarea name="description" rows="3" maxlength="5000" placeholder="补充背景、验收标准等"></textarea>
-        </label>
-
-        <div class="fm-grid">
+        <form id="authForm" novalidate>
           <label class="fm-row">
-            <span class="fm-label">优先级</span>
-            <select name="priority">
-              <option value="high">高</option>
-              <option value="medium" selected>中</option>
-              <option value="low">低</option>
-            </select>
+            <span class="fm-label">用户名</span>
+            <input
+              name="username"
+              type="text"
+              maxlength="32"
+              autocomplete="username"
+              placeholder="3-32 位字母 / 数字 / 下划线"
+              required
+            />
+          </label>
+          <label class="fm-row">
+            <span class="fm-label">密码</span>
+            <input
+              name="password"
+              type="password"
+              maxlength="72"
+              autocomplete="current-password"
+              placeholder="至少 8 位"
+              required
+            />
+          </label>
+          <p class="form-error" id="authError" hidden></p>
+          <button id="authSubmit" class="btn btn-primary btn-block" type="submit">登录</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ===================== 弹窗 ===================== -->
+    <div id="modalRoot" class="modal-root" hidden>
+      <div class="modal-backdrop" data-close="1"></div>
+
+      <!-- 新建 / 编辑 -->
+      <div class="modal" id="modalForm" hidden role="dialog" aria-modal="true" aria-labelledby="formTitle">
+        <header class="modal-head">
+          <h2 id="formTitle">新建任务</h2>
+          <button class="icon-btn" type="button" data-close="1" aria-label="关闭">
+            <svg
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            >
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+        </header>
+        <form id="issueForm" class="modal-body" novalidate>
+          <label class="fm-row">
+            <span class="fm-label">标题 <em>*</em></span>
+            <input name="title" type="text" maxlength="255" required placeholder="一句话描述这个任务" />
           </label>
 
           <label class="fm-row">
-            <span class="fm-label">负责人</span>
-            <input name="assignee" type="text" maxlength="64" placeholder="如：周野" list="assigneeList" />
-            <datalist id="assigneeList"></datalist>
+            <span class="fm-label">描述</span>
+            <textarea
+              name="description"
+              rows="3"
+              maxlength="5000"
+              placeholder="补充背景、验收标准等"
+            ></textarea>
           </label>
-        </div>
 
-        <div class="fm-grid">
+          <div class="fm-grid">
+            <label class="fm-row">
+              <span class="fm-label">优先级</span>
+              <select name="priority">
+                <option value="high">高</option>
+                <option value="medium" selected>中</option>
+                <option value="low">低</option>
+              </select>
+            </label>
+
+            <label class="fm-row">
+              <span class="fm-label">负责人</span>
+              <input name="assignee" type="text" maxlength="64" placeholder="如：周野" list="assigneeList" />
+              <datalist id="assigneeList"></datalist>
+            </label>
+          </div>
+
+          <div class="fm-grid">
+            <label class="fm-row">
+              <span class="fm-label">状态</span>
+              <select name="status"></select>
+            </label>
+
+            <label class="fm-row">
+              <span class="fm-label">截止日期</span>
+              <input name="dueDate" type="date" />
+            </label>
+          </div>
+
           <label class="fm-row">
-            <span class="fm-label">状态</span>
-            <select name="status"></select>
+            <span class="fm-label">标签</span>
+            <input name="tags" type="text" placeholder="用逗号分隔，如：前端, 交互" />
           </label>
 
-          <label class="fm-row">
-            <span class="fm-label">截止日期</span>
-            <input name="dueDate" type="date" />
+          <!-- 仅当状态选为「失败」时出现 -->
+          <label class="fm-row fm-reason" id="reasonRow" hidden>
+            <span class="fm-label">失败原因 <em>*</em></span>
+            <textarea
+              name="failReason"
+              rows="2"
+              maxlength="1000"
+              placeholder="必须填写，否则无法保存到「失败」列"
+            ></textarea>
           </label>
+
+          <p class="form-error" id="formError" hidden></p>
+
+          <footer class="modal-foot">
+            <button class="btn btn-ghost" type="button" data-close="1">取消</button>
+            <button class="btn btn-primary" type="submit">保存</button>
+          </footer>
+        </form>
+      </div>
+
+      <!-- 删除二次确认 -->
+      <div
+        class="modal modal-sm"
+        id="modalConfirm"
+        hidden
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirmTitle"
+      >
+        <header class="modal-head">
+          <h2 id="confirmTitle">删除任务</h2>
+        </header>
+        <div class="modal-body">
+          <p id="confirmText" class="confirm-text"></p>
+          <footer class="modal-foot">
+            <button class="btn btn-ghost" type="button" data-close="1">取消</button>
+            <button class="btn btn-danger" id="confirmOk" type="button">确认删除</button>
+          </footer>
         </div>
+      </div>
 
-        <label class="fm-row">
-          <span class="fm-label">标签</span>
-          <input name="tags" type="text" placeholder="用逗号分隔，如：前端, 交互" />
-        </label>
-
-        <!-- 仅当状态选为「失败」时出现 -->
-        <label class="fm-row fm-reason" id="reasonRow" hidden>
-          <span class="fm-label">失败原因 <em>*</em></span>
-          <textarea name="failReason" rows="2" maxlength="1000" placeholder="必须填写，否则无法保存到「失败」列"></textarea>
-        </label>
-
-        <p class="form-error" id="formError" hidden></p>
-
-        <footer class="modal-foot">
-          <button class="btn btn-ghost" type="button" data-close="1">取消</button>
-          <button class="btn btn-primary" type="submit">保存</button>
-        </footer>
-      </form>
-    </div>
-
-    <!-- 删除二次确认 -->
-    <div class="modal modal-sm" id="modalConfirm" hidden role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle">
-      <header class="modal-head">
-        <h2 id="confirmTitle">删除任务</h2>
-      </header>
-      <div class="modal-body">
-        <p id="confirmText" class="confirm-text"></p>
-        <footer class="modal-foot">
-          <button class="btn btn-ghost" type="button" data-close="1">取消</button>
-          <button class="btn btn-danger" id="confirmOk" type="button">确认删除</button>
-        </footer>
+      <!-- 拖入失败列：填写原因 -->
+      <div
+        class="modal modal-sm"
+        id="modalReason"
+        hidden
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reasonTitle"
+      >
+        <header class="modal-head">
+          <h2 id="reasonTitle">标记为失败</h2>
+        </header>
+        <div class="modal-body">
+          <p class="confirm-text">
+            将任务 <strong id="reasonIssueName"></strong> 移动到「失败」列，请先填写失败原因。
+          </p>
+          <label class="fm-row">
+            <span class="fm-label">失败原因 <em>*</em></span>
+            <textarea
+              id="reasonInput"
+              rows="3"
+              maxlength="1000"
+              placeholder="例如：依赖的第三方接口不可用，本期暂停"
+            ></textarea>
+          </label>
+          <p class="form-error" id="reasonError" hidden></p>
+          <footer class="modal-foot">
+            <button class="btn btn-ghost" type="button" data-close="1">取消移动</button>
+            <button class="btn btn-danger" id="reasonOk" type="button">确认并移动</button>
+          </footer>
+        </div>
       </div>
     </div>
 
-    <!-- 拖入失败列：填写原因 -->
-    <div class="modal modal-sm" id="modalReason" hidden role="dialog" aria-modal="true" aria-labelledby="reasonTitle">
-      <header class="modal-head">
-        <h2 id="reasonTitle">标记为失败</h2>
-      </header>
-      <div class="modal-body">
-        <p class="confirm-text">将任务 <strong id="reasonIssueName"></strong> 移动到「失败」列，请先填写失败原因。</p>
-        <label class="fm-row">
-          <span class="fm-label">失败原因 <em>*</em></span>
-          <textarea id="reasonInput" rows="3" maxlength="1000" placeholder="例如：依赖的第三方接口不可用，本期暂停"></textarea>
-        </label>
-        <p class="form-error" id="reasonError" hidden></p>
-        <footer class="modal-foot">
-          <button class="btn btn-ghost" type="button" data-close="1">取消移动</button>
-          <button class="btn btn-danger" id="reasonOk" type="button">确认并移动</button>
-        </footer>
-      </div>
-    </div>
-  </div>
+    <div id="toastRoot" class="toast-root" aria-live="polite"></div>
 
-  <div id="toastRoot" class="toast-root" aria-live="polite"></div>
-
-  <script type="module" src="/src/main.js"></script>
-</body>
+    <script type="module" src="/src/main.js"></script>
+  </body>
 </html>

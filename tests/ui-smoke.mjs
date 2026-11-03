@@ -108,10 +108,10 @@ const wait = (ms = 50) => new Promise((r) => setTimeout(r, ms));
 
 let modals;
 let state;
-let render;
 
 try {
-  render = await import('../public/src/render.js');
+  // render.js 仅为了解其模块副作用（订阅 onChange），测试不直接引用
+  await import('../public/src/render.js');
   state = await import('../public/src/state.js');
   modals = await import('../public/src/modals.js');
   await import('../public/src/main.js');
@@ -123,8 +123,7 @@ try {
 
 const { state: s, notify } = state;
 const $ = (sel) => document.querySelector(sel);
-const countText = (status) =>
-  $(`.column[data-status="${status}"] .col-count`).textContent;
+const countText = (status) => $(`.column[data-status="${status}"] .col-count`).textContent;
 const cardCount = () => document.querySelectorAll('.card').length;
 
 // ---------------------------------------------------------------
@@ -137,7 +136,7 @@ check(
   '列顺序为 未规划/规划中/进行中/已完成/失败',
   JSON.stringify(columns.map((c) => c.dataset.status)) ===
     JSON.stringify(['backlog', 'planning', 'in_progress', 'done', 'failed']),
-  columns.map((c) => c.dataset.status).join(',')
+  columns.map((c) => c.dataset.status).join(','),
 );
 check('失败列带 is-fail 标记', Boolean($('.column.is-fail')));
 
@@ -145,11 +144,11 @@ console.log('\n--- 2. 卡片渲染 ---');
 check('渲染出 5 张卡片', cardCount() === 5, String(cardCount()));
 check(
   '卡片可拖拽',
-  [...document.querySelectorAll('.card')].every((c) => c.getAttribute('draggable') === 'true')
+  [...document.querySelectorAll('.card')].every((c) => c.getAttribute('draggable') === 'true'),
 );
 check(
   '卡片带优先级标识',
-  [...document.querySelectorAll('.card')].every((c) => Boolean(c.dataset.priority))
+  [...document.querySelectorAll('.card')].every((c) => Boolean(c.dataset.priority)),
 );
 
 console.log('\n--- 3. 状态下拉（此前为空的缺陷） ---');
@@ -161,13 +160,13 @@ check(
   '状态选项取值覆盖五列',
   JSON.stringify(opts.map((o) => o.value)) ===
     JSON.stringify(['backlog', 'planning', 'in_progress', 'done', 'failed']),
-  opts.map((o) => o.value).join(',')
+  opts.map((o) => o.value).join(','),
 );
 check(
   '状态选项文案为中文列名',
   JSON.stringify(opts.map((o) => o.textContent.trim())) ===
     JSON.stringify(['未规划', '规划中', '进行中', '已完成', '失败']),
-  opts.map((o) => o.textContent.trim()).join(',')
+  opts.map((o) => o.textContent.trim()).join(','),
 );
 
 console.log('\n--- 4. 列计数（筛选后/总数） ---');
@@ -275,7 +274,7 @@ await wait(200);
 check(
   '收到其他标签页的变更通知后自动刷新',
   listCalls > callsBeforeEvent,
-  `${callsBeforeEvent} -> ${listCalls}`
+  `${callsBeforeEvent} -> ${listCalls}`,
 );
 
 const callsBeforeUnrelated = listCalls;
@@ -288,11 +287,7 @@ check('无关 key 不触发刷新', listCalls === callsBeforeUnrelated, `${calls
 const callsBeforeVisible = listCalls;
 document.dispatchEvent(new window.Event('visibilitychange'));
 await wait(200);
-check(
-  '切回前台时兜底刷新一次',
-  listCalls > callsBeforeVisible,
-  `${callsBeforeVisible} -> ${listCalls}`
-);
+check('切回前台时兜底刷新一次', listCalls > callsBeforeVisible, `${callsBeforeVisible} -> ${listCalls}`);
 
 console.log('\n--- 12. 乐观并发控制（前端） ---');
 {
@@ -365,12 +360,12 @@ console.log('\n--- 13. 触屏拖拽（Pointer Events） ---');
   check(
     '落位列取自占位块所在列',
     Boolean(movePayload && movePayload.toStatus === 'backlog'),
-    movePayload && movePayload.toStatus
+    movePayload && movePayload.toStatus,
   );
   check(
     '移动请求携带乐观锁版本号',
     movePayload && movePayload.expectedVersion === 7,
-    String(movePayload && movePayload.expectedVersion)
+    String(movePayload && movePayload.expectedVersion),
   );
   check('松手后退出拖拽态', dnd.isTouchDragging() === false);
   check('卡片不再带 dragging 标记', card1.classList.contains('dragging') === false);
@@ -395,14 +390,20 @@ console.log('\n--- 14. 批量选择与操作条 ---');
   const pick = (id) => document.querySelector(`.card[data-id="${id}"] .card-pick`);
 
   check('未勾选时批量条隐藏', bar.hidden === true);
-  check('每张卡片都有复选框', [1, 2, 3, 4, 5].every((id) => Boolean(pick(id))));
+  check(
+    '每张卡片都有复选框',
+    [1, 2, 3, 4, 5].every((id) => Boolean(pick(id))),
+  );
 
   pick(1).click();
   await wait(20);
   check('勾选后进入 selection', s.selection.has(1));
   check('勾选后批量条出现', bar.hidden === false);
   check('计数显示「已选 1 项」', $('#batchCount').textContent === '已选 1 项', $('#batchCount').textContent);
-  check('卡片带上 selected 标记', document.querySelector('.card[data-id="1"]').classList.contains('selected'));
+  check(
+    '卡片带上 selected 标记',
+    document.querySelector('.card[data-id="1"]').classList.contains('selected'),
+  );
 
   pick(2).click();
   await wait(20);
@@ -432,12 +433,12 @@ console.log('\n--- 14. 批量选择与操作条 ---');
   check(
     '批量移动带上全部选中 id',
     JSON.stringify(moveArgs?.items?.map((it) => it.id)) === JSON.stringify([1, 2]),
-    JSON.stringify(moveArgs?.items)
+    JSON.stringify(moveArgs?.items),
   );
   check(
     '批量移动逐卡携带乐观锁版本号',
     moveArgs?.items?.every((it) => Number.isInteger(it.expectedVersion)) === true,
-    JSON.stringify(moveArgs?.items)
+    JSON.stringify(moveArgs?.items),
   );
   check('批量移动目标列取自下拉', moveArgs?.toStatus === 'done', String(moveArgs?.toStatus));
   check('成功后清空勾选', s.selection.size === 0, String(s.selection.size));
@@ -462,7 +463,11 @@ console.log('\n--- 14. 批量选择与操作条 ---');
 
   $('#confirmOk').click();
   await wait(120);
-  check('确认后调用批量删除接口', JSON.stringify(removeIds) === JSON.stringify([3]), JSON.stringify(removeIds));
+  check(
+    '确认后调用批量删除接口',
+    JSON.stringify(removeIds) === JSON.stringify([3]),
+    JSON.stringify(removeIds),
+  );
   apiMod.api.batchRemove = origBatchRemove;
 
   // 取消选择

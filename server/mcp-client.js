@@ -42,9 +42,7 @@ function connectMcp() {
   client.onerror = (err) => {
     logger.error({ err: err.message }, 'mcp client transport error');
   };
-  return client
-    .connect(transport)
-    .then(() => client); // connect() 的返回值不是 client，必须显式回传
+  return client.connect(transport).then(() => client); // connect() 的返回值不是 client，必须显式回传
 }
 
 export function getMcpClient() {

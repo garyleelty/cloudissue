@@ -47,15 +47,14 @@ function cardSignature(issue) {
 function logItemHtml(log) {
   const fromLabel = log.fromStatus ? STATUS_LABELS[log.fromStatus] : '新建';
   const toLabel = STATUS_LABELS[log.toStatus] || log.toStatus;
-  const reasonHtml = log.reason
-    ? `<div class="log-reason">失败原因：${esc(log.reason)}</div>`
-    : '';
+  const reasonHtml = log.reason ? `<div class="log-reason">失败原因：${esc(log.reason)}</div>` : '';
   return `
     <div class="log-item" data-to="${esc(log.toStatus)}">
       <span class="log-bar"></span>
       <div>
         <div class="log-main">${esc(fromLabel)} → ${esc(toLabel)}</div>
         <div class="log-at">${esc(fmtDateTime(log.changedAt))}</div>
+        ${reasonHtml}
       </div>
     </div>`;
 }
@@ -64,9 +63,7 @@ function cardInnerHtml(issue) {
   const isOpen = state.expanded.has(issue.id);
   const { text: dueText, cls: dueClass } = dueInfo(issue);
 
-  const tagsHtml = issue.tags
-    .map((t) => `<span class="chip tag"># ${esc(t)}</span>`)
-    .join('');
+  const tagsHtml = issue.tags.map((t) => `<span class="chip tag"># ${esc(t)}</span>`).join('');
 
   const logsHtml = [...issue.logs].reverse().map(logItemHtml).join('');
 
@@ -219,9 +216,9 @@ export function renderSelectionBar() {
 
   const sel = $('#batchStatus');
   if (sel && !sel.options.length) {
-    sel.innerHTML = STATUSES.map(
-      (s) => `<option value="${esc(s)}">${esc(STATUS_LABELS[s])}</option>`
-    ).join('');
+    sel.innerHTML = STATUSES.map((s) => `<option value="${esc(s)}">${esc(STATUS_LABELS[s])}</option>`).join(
+      '',
+    );
   }
 
   const n = state.selection.size;
@@ -247,7 +244,5 @@ export function renderTabs() {
 /** 让「负责人」输入框复用已有负责人名单 */
 export function syncAssigneeList() {
   const names = [...new Set(state.issues.map((i) => i.assignee).filter(Boolean))].sort();
-  $('#assigneeList').innerHTML = names
-    .map((n) => `<option value="${esc(n)}"></option>`)
-    .join('');
+  $('#assigneeList').innerHTML = names.map((n) => `<option value="${esc(n)}"></option>`).join('');
 }

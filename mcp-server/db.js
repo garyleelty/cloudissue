@@ -69,7 +69,7 @@ export async function ensureDatabase() {
     await admin.query(
       `CREATE DATABASE IF NOT EXISTS \`${env.DB_NAME}\`
          DEFAULT CHARACTER SET utf8mb4
-         DEFAULT COLLATE utf8mb4_unicode_ci`
+         DEFAULT COLLATE utf8mb4_unicode_ci`,
     );
   } finally {
     await admin.end();

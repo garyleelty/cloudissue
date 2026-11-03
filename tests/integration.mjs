@@ -74,14 +74,22 @@ async function main() {
     password: 'password123',
     displayName: '集成用户A',
   });
-  check('注册成功返回 201 与用户信息', regA.status === 201 && regA.data.user?.username === USER_A, JSON.stringify(regA.data));
+  check(
+    '注册成功返回 201 与用户信息',
+    regA.status === 201 && regA.data.user?.username === USER_A,
+    JSON.stringify(regA.data),
+  );
   check('注册后即持有会话', Boolean(cookieJar));
 
   const dupReg = await post('/api/auth/register', { username: USER_A, password: 'password123' });
   check('重复用户名被拒绝', dupReg.status === 400, JSON.stringify(dupReg.data));
 
   const meA = await api('/api/auth/me');
-  check('me 返回当前用户', meA.status === 200 && meA.data.user?.username === USER_A, JSON.stringify(meA.data));
+  check(
+    'me 返回当前用户',
+    meA.status === 200 && meA.data.user?.username === USER_A,
+    JSON.stringify(meA.data),
+  );
 
   const badLogin = await post('/api/auth/login', { username: USER_A, password: 'wrong-pass-1' });
   check('错误密码登录返回 401', badLogin.status === 401, JSON.stringify(badLogin.data));
@@ -91,14 +99,22 @@ async function main() {
   const anonMe = await api('/api/auth/me');
   check('登出后 me 返回 401', anonMe.status === 401, String(anonMe.status));
   const loginA = await post('/api/auth/login', { username: USER_A, password: 'password123' });
-  check('重新登录成功', loginA.status === 200 && loginA.data.user?.username === USER_A, JSON.stringify(loginA.data));
+  check(
+    '重新登录成功',
+    loginA.status === 200 && loginA.data.user?.username === USER_A,
+    JSON.stringify(loginA.data),
+  );
   const cookieA = cookieJar;
 
   // 共享看板：用户 B 登录后读的是同一块板
   const regB = await post('/api/auth/register', { username: USER_B, password: 'password123' });
   check('注册第二个用户成功', regB.status === 201, JSON.stringify(regB.data));
   const { data: listForB } = await api('/api/issues');
-  check('用户 B 登录后可读取同一块看板', (listForB.issues || []).length === 10, String((listForB.issues || []).length));
+  check(
+    '用户 B 登录后可读取同一块看板',
+    (listForB.issues || []).length === 10,
+    String((listForB.issues || []).length),
+  );
 
   // 改密：旧会话吊销、新会话可用、新密码登录、旧密码失效
   cookieJar = cookieA;
@@ -151,9 +167,21 @@ async function main() {
   check('新建返回 201', created.status === 201, JSON.stringify(created.data));
   const id = created.data.id;
   check('返回了自增 ID', Number.isInteger(id) && id > 0, String(id));
-  check('标签正确写入', JSON.stringify(created.data.issue.tags) === JSON.stringify(['测试', '集成']), JSON.stringify(created.data.issue.tags));
-  check('新建即产生一条变更记录', created.data.issue.logs.length === 1, String(created.data.issue.logs.length));
-  check('新建记录的 fromStatus 为空', created.data.issue.logs[0].fromStatus === '', JSON.stringify(created.data.issue.logs[0]));
+  check(
+    '标签正确写入',
+    JSON.stringify(created.data.issue.tags) === JSON.stringify(['测试', '集成']),
+    JSON.stringify(created.data.issue.tags),
+  );
+  check(
+    '新建即产生一条变更记录',
+    created.data.issue.logs.length === 1,
+    String(created.data.issue.logs.length),
+  );
+  check(
+    '新建记录的 fromStatus 为空',
+    created.data.issue.logs[0].fromStatus === '',
+    JSON.stringify(created.data.issue.logs[0]),
+  );
 
   console.log('\n--- 4. 失败原因强校验 ---');
   const bad = await post(`/api/issues/${id}/move`, { toStatus: 'failed' });
@@ -170,12 +198,20 @@ async function main() {
   const reason = '集成测试：模拟依赖方接口不可用';
   const good = await post(`/api/issues/${id}/move`, { toStatus: 'failed', failReason: reason });
   check('移动成功', good.status === 200 && good.data.moved === true, JSON.stringify(good.data));
-  check('记录了状态变化', good.data.statusChanged === true && good.data.fromStatus === 'backlog', JSON.stringify(good.data));
+  check(
+    '记录了状态变化',
+    good.data.statusChanged === true && good.data.fromStatus === 'backlog',
+    JSON.stringify(good.data),
+  );
 
   const moved = await getIssue(id);
   check('状态已变为 failed', moved.status === 'failed', moved.status);
   const lastLog = moved.logs[moved.logs.length - 1];
-  check('变更记录写入了原状态与新状态', lastLog.fromStatus === 'backlog' && lastLog.toStatus === 'failed', JSON.stringify(lastLog));
+  check(
+    '变更记录写入了原状态与新状态',
+    lastLog.fromStatus === 'backlog' && lastLog.toStatus === 'failed',
+    JSON.stringify(lastLog),
+  );
   check('变更记录写入了失败原因', lastLog.reason === reason, lastLog.reason);
   check('变更记录带时间戳', Boolean(lastLog.changedAt), lastLog.changedAt);
 
@@ -186,8 +222,14 @@ async function main() {
   // 把 C 插到 A 之后：期望 A, C, B
   await post(`/api/issues/${c.data.id}/move`, { toStatus: 'done', afterId: a.data.id });
   const { data: dl } = await api('/api/issues');
-  const doneOrder = dl.issues.filter((i) => ['排序A', '排序B', '排序C'].includes(i.title)).map((i) => i.title);
-  check('afterId 排序生效（期望 A,C,B）', JSON.stringify(doneOrder) === JSON.stringify(['排序A', '排序C', '排序B']), JSON.stringify(doneOrder));
+  const doneOrder = dl.issues
+    .filter((i) => ['排序A', '排序B', '排序C'].includes(i.title))
+    .map((i) => i.title);
+  check(
+    'afterId 排序生效（期望 A,C,B）',
+    JSON.stringify(doneOrder) === JSON.stringify(['排序A', '排序C', '排序B']),
+    JSON.stringify(doneOrder),
+  );
   for (const t of [a, b, c]) await del(`/api/issues/${t.data.id}`);
 
   console.log('\n--- 7. 更新任务 ---');
@@ -201,8 +243,15 @@ async function main() {
   check('更新返回 200', upd.status === 200, JSON.stringify(upd.data));
   check('标题已更新', upd.data.issue.title === '集成测试任务-已修改', upd.data.issue.title);
   check('优先级已更新', upd.data.issue.priority === 'low', upd.data.issue.priority);
-  check('标签被整体替换', JSON.stringify(upd.data.issue.tags) === JSON.stringify(['改过的标签']), JSON.stringify(upd.data.issue.tags));
-  check('离开失败列产生新记录', upd.data.issue.logs.some((l) => l.fromStatus === 'failed' && l.toStatus === 'planning'));
+  check(
+    '标签被整体替换',
+    JSON.stringify(upd.data.issue.tags) === JSON.stringify(['改过的标签']),
+    JSON.stringify(upd.data.issue.tags),
+  );
+  check(
+    '离开失败列产生新记录',
+    upd.data.issue.logs.some((l) => l.fromStatus === 'failed' && l.toStatus === 'planning'),
+  );
 
   console.log('\n--- 8. 更新到失败列同样要求原因 ---');
   const badUpdate = await put(`/api/issues/${id}`, { status: 'failed' });
@@ -229,7 +278,11 @@ async function main() {
     expectedVersion: any.version,
   });
   check('版本号一致时更新成功', okUpd.status === 200, JSON.stringify(okUpd.data));
-  check('更新后版本号 +1', okUpd.data.issue.version === any.version + 1, String(okUpd.data.issue && okUpd.data.issue.version));
+  check(
+    '更新后版本号 +1',
+    okUpd.data.issue.version === any.version + 1,
+    String(okUpd.data.issue && okUpd.data.issue.version),
+  );
 
   const staleUpd = await put(`/api/issues/${any.id}`, {
     title: `${any.title}·过期`,
@@ -237,7 +290,11 @@ async function main() {
   });
   check('版本号过期时更新返回 409', staleUpd.status === 409, JSON.stringify(staleUpd.data));
   check('冲突提示说明原因', /已被其他人修改/.test(staleUpd.data.error || ''), staleUpd.data.error);
-  check('冲突响应带回当前版本号', staleUpd.data.currentVersion === any.version + 1, String(staleUpd.data.currentVersion));
+  check(
+    '冲突响应带回当前版本号',
+    staleUpd.data.currentVersion === any.version + 1,
+    String(staleUpd.data.currentVersion),
+  );
 
   const staleMove = await post(`/api/issues/${any.id}/move`, {
     toStatus: any.status,
@@ -251,7 +308,11 @@ async function main() {
     afterId: null,
     expectedVersion: cur.version,
   });
-  check('版本号一致时移动成功', okMove.status === 200 && okMove.data.moved === true, JSON.stringify(okMove.data));
+  check(
+    '版本号一致时移动成功',
+    okMove.status === 200 && okMove.data.moved === true,
+    JSON.stringify(okMove.data),
+  );
 
   // 复原现场：清掉本组改动，避免污染后续轮次的示例数据
   await put(`/api/issues/${any.id}`, { title: any.title });
@@ -276,7 +337,7 @@ async function main() {
   check(
     '被拒绝后三张卡仍停留在原列',
     bIds.every((id) => statusOf(afterBadBatch.issues, id) === 'backlog'),
-    bIds.map((id) => statusOf(afterBadBatch.issues, id)).join(',')
+    bIds.map((id) => statusOf(afterBadBatch.issues, id)).join(','),
   );
 
   const mv = await post('/api/issues/batch/move', { ids: bIds, toStatus: 'planning' });
@@ -287,13 +348,13 @@ async function main() {
   check(
     '三张卡状态均已变更',
     bIds.every((id) => statusOf(afterMv.issues, id) === 'planning'),
-    bIds.map((id) => statusOf(afterMv.issues, id)).join(',')
+    bIds.map((id) => statusOf(afterMv.issues, id)).join(','),
   );
   const planningTitles = afterMv.issues.filter((i) => i.status === 'planning').map((i) => i.title);
   check(
     '按勾选顺序追加到目标列尾部',
     JSON.stringify(planningTitles.slice(-3)) === JSON.stringify(['批量A', '批量B', '批量C']),
-    planningTitles.join(',')
+    planningTitles.join(','),
   );
 
   const mvFail = await post('/api/issues/batch/move', {
@@ -301,7 +362,11 @@ async function main() {
     toStatus: 'failed',
     failReason: '批量：依赖方接口整体不可用',
   });
-  check('填写原因后批量进入失败列', mvFail.status === 200 && mvFail.data.moved === 3, JSON.stringify(mvFail.data));
+  check(
+    '填写原因后批量进入失败列',
+    mvFail.status === 200 && mvFail.data.moved === 3,
+    JSON.stringify(mvFail.data),
+  );
   const failedOne = await getIssue(bIds[0]);
   const batchLog = failedOne.logs[failedOne.logs.length - 1];
   check('批量移动同样写入变更记录', batchLog.toStatus === 'failed', JSON.stringify(batchLog));
@@ -327,8 +392,16 @@ async function main() {
     ],
     toStatus: 'done',
   });
-  check('混合版本时正确的卡片成功', mixed.status === 200 && mixed.data.moved === 1, JSON.stringify(mixed.data));
-  check('过期的卡片进入 failed 汇总', (mixed.data.failed || []).length === 1, JSON.stringify(mixed.data.failed));
+  check(
+    '混合版本时正确的卡片成功',
+    mixed.status === 200 && mixed.data.moved === 1,
+    JSON.stringify(mixed.data),
+  );
+  check(
+    '过期的卡片进入 failed 汇总',
+    (mixed.data.failed || []).length === 1,
+    JSON.stringify(mixed.data.failed),
+  );
 
   const badDel = await post('/api/issues/batch/delete', { ids: [] });
   check('空 id 列表的批量删除被拒绝', badDel.status === 400, JSON.stringify(badDel.data));
@@ -338,7 +411,11 @@ async function main() {
 
   const { data: afterBatch } = await api('/api/issues');
   check('三张卡已从列表移除', !afterBatch.issues.some((i) => bIds.includes(i.id)));
-  check('总数回到 10（批量操作未污染示例数据）', afterBatch.issues.length === 10, String(afterBatch.issues.length));
+  check(
+    '总数回到 10（批量操作未污染示例数据）',
+    afterBatch.issues.length === 10,
+    String(afterBatch.issues.length),
+  );
 
   const delMissing = await post('/api/issues/batch/delete', { ids: [99999999] });
   check('删除不存在的任务返回 400', delMissing.status === 400, JSON.stringify(delMissing.data));

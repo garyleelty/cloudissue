@@ -39,9 +39,7 @@ export function clearDragState() {
 
 /** 根据指针纵坐标把占位块插到合适位置 */
 function updatePlaceholder(colBody, y) {
-  const cards = [...colBody.querySelectorAll('.card')].filter(
-    (c) => !c.classList.contains('dragging')
-  );
+  const cards = [...colBody.querySelectorAll('.card')].filter((c) => !c.classList.contains('dragging'));
 
   let ref = null;
   for (const c of cards) {

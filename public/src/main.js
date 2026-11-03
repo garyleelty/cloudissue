@@ -29,12 +29,7 @@ import {
   cancelPendingReason,
   hasPendingReason,
 } from './modals.js';
-import {
-  STATUSES,
-  STATUS_LABELS,
-  FAIL_STATUS,
-  MOBILE_BREAKPOINT,
-} from '../../shared/constants.js';
+import { STATUSES, STATUS_LABELS, FAIL_STATUS, MOBILE_BREAKPOINT } from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
@@ -250,7 +245,7 @@ function bindGlobalEvents() {
         render.renderTabs();
       }
     },
-    { passive: true }
+    { passive: true },
   );
 }
 
@@ -300,7 +295,7 @@ function bindBatchBar() {
         skipped
           ? `已移动 ${moved} 个任务，${skipped} 个失败`
           : `已移动 ${moved} 个任务到「${STATUS_LABELS[toStatus]}」`,
-        skipped ? 'error' : 'success'
+        skipped ? 'error' : 'success',
       );
       clearSelection();
     } catch (err) {
@@ -332,7 +327,10 @@ async function init() {
   setInterval(checkHealth, 30_000);
 
   // 先探测登录态：未登录只亮登录视图，不带出看板数据的 401 报错
-  const me = await api.me().then((r) => r.user).catch(() => null);
+  const me = await api
+    .me()
+    .then((r) => r.user)
+    .catch(() => null);
   if (me) showBoard(me);
   else showAuth();
 }

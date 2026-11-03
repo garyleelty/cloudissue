@@ -8,7 +8,12 @@
 import { state } from './state.js';
 import { api } from './api.js';
 import { toast } from './toast.js';
-import { STATUSES, STATUS_LABELS, FAIL_STATUS, MSG_MOVE_CANCELLED_NO_REASON } from '../../shared/constants.js';
+import {
+  STATUSES,
+  STATUS_LABELS,
+  FAIL_STATUS,
+  MSG_MOVE_CANCELLED_NO_REASON,
+} from '../../shared/constants.js';
 import { esc } from './utils.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -53,9 +58,9 @@ export function showFormError(msg) {
 export function populateStatusOptions() {
   const select = field('status');
   if (!select) return;
-  select.innerHTML = STATUSES.map(
-    (s) => `<option value="${esc(s)}">${esc(STATUS_LABELS[s])}</option>`
-  ).join('');
+  select.innerHTML = STATUSES.map((s) => `<option value="${esc(s)}">${esc(STATUS_LABELS[s])}</option>`).join(
+    '',
+  );
 }
 
 /**
@@ -88,9 +93,7 @@ export function openForm(issue = null, presetStatus = null) {
  * @returns {boolean}
  */
 export function syncReasonVisibility() {
-  const editing = state.editingId
-    ? state.issues.find((i) => i.id === state.editingId)
-    : null;
+  const editing = state.editingId ? state.issues.find((i) => i.id === state.editingId) : null;
   const statusEl = field('status');
   const reasonEl = field('failReason');
   if (!statusEl || !reasonEl) return false;
@@ -121,9 +124,7 @@ async function submitForm(e) {
     return;
   }
 
-  const editing = state.editingId
-    ? state.issues.find((i) => i.id === state.editingId)
-    : null;
+  const editing = state.editingId ? state.issues.find((i) => i.id === state.editingId) : null;
 
   const payload = {
     title,
@@ -255,7 +256,7 @@ export function initModals(callbacks = {}) {
           skipped
             ? `已删除 ${res.deleted} 个任务，${skipped} 个失败`
             : `已删除 ${res?.deleted ?? target.ids.length} 个任务`,
-          skipped ? 'error' : 'success'
+          skipped ? 'error' : 'success',
         );
       } else {
         await api.remove(target.id);

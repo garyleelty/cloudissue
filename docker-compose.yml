@@ -3,23 +3,39 @@ services:
     image: mysql:8.4
     container_name: cloudissue-mysql
     restart: unless-stopped
+    # 口令一律取自 .env，禁止在编排文件里写死（.env.example 有模板）
     environment:
-      MYSQL_ROOT_PASSWORD: root_pass
-      MYSQL_DATABASE: issue_board
-      MYSQL_USER: issue
-      MYSQL_PASSWORD: issue_pass
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-issue_board}
+      MYSQL_USER: ${DB_USER:-issue}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD}
     ports:
-      - "3306:3306"
+      - '${MYSQL_PUBLISH:-127.0.0.1:3306}:3306' # 默认仅绑定本机回环；需外部直连时改 .env
     volumes:
       - mysql-data:/var/lib/mysql
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_pass"]
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-uroot', '-p$$MYSQL_ROOT_PASSWORD']
       interval: 5s
       timeout: 5s
       retries: 20
+
+  app:
+    build: .
+    container_name: cloudissue-app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # 容器网络内固定连 mysql 服务；.env 里的 DB_HOST 被这里覆盖
+      DB_HOST: mysql
+      DB_PORT: '3306'
+    ports:
+      - '${PORT:-5173}:5173'
+    depends_on:
+      mysql:
+        condition: service_healthy
 
 volumes:
   mysql-data:

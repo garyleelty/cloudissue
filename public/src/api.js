@@ -54,11 +54,9 @@ export const api = {
   // ---- 认证 ----
   me: () => request('/api/auth/me'),
   /** @param {{ username: string, password: string }} payload */
-  login: (payload) =>
-    request('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+  login: (payload) => request('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
   /** @param {{ username: string, password: string, displayName?: string }} payload */
-  register: (payload) =>
-    request('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
+  register: (payload) => request('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
   logout: () => request('/api/auth/logout', { method: 'POST' }),
   /** @param {{ oldPassword: string, newPassword: string }} payload */
   changePassword: (payload) =>
@@ -68,20 +66,17 @@ export const api = {
   health: () => request('/api/health'),
   list: () => request('/api/issues'),
   /** @param {Record<string, unknown>} payload */
-  create: (payload) =>
-    request('/api/issues', { method: 'POST', body: JSON.stringify(payload) }),
+  create: (payload) => request('/api/issues', { method: 'POST', body: JSON.stringify(payload) }),
   /**
    * @param {number} id
    * @param {Record<string, unknown>} payload
    */
-  update: (id, payload) =>
-    request(`/api/issues/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  update: (id, payload) => request(`/api/issues/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   /**
    * @param {number} id
    * @param {{ toStatus: string, afterId?: number | null, failReason?: string, expectedVersion?: number }} payload
    */
-  move: (id, payload) =>
-    request(`/api/issues/${id}/move`, { method: 'POST', body: JSON.stringify(payload) }),
+  move: (id, payload) => request(`/api/issues/${id}/move`, { method: 'POST', body: JSON.stringify(payload) }),
   /** @param {number} id */
   remove: (id) => request(`/api/issues/${id}`, { method: 'DELETE' }),
 
