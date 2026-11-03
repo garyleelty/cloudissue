@@ -16,7 +16,7 @@ import { state, notify } from './state.js';
 import { api } from './api.js';
 import { toast } from './toast.js';
 import { askFailureReason } from './modals.js';
-import { FAIL_STATUS, STATUS_LABELS } from '../../shared/constants.js';
+import { FAIL_STATUS, STATUS_LABELS, MSG_MOVE_CANCELLED_NO_REASON } from '../../shared/constants.js';
 
 const board = document.querySelector('#board');
 
@@ -122,7 +122,7 @@ async function performMove(drag, toStatus, afterId) {
   if (needsReason) {
     const reason = await askFailureReason(issue);
     if (!reason) {
-      toast('已取消移动：未填写失败原因，任务保留在原列', 'error');
+      toast(MSG_MOVE_CANCELLED_NO_REASON, 'error');
       return;
     }
     failReason = reason;

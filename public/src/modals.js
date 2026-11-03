@@ -8,7 +8,7 @@
 import { state } from './state.js';
 import { api } from './api.js';
 import { toast } from './toast.js';
-import { STATUSES, STATUS_LABELS, FAIL_STATUS } from '../../shared/constants.js';
+import { STATUSES, STATUS_LABELS, FAIL_STATUS, MSG_MOVE_CANCELLED_NO_REASON } from '../../shared/constants.js';
 import { esc } from './utils.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -218,7 +218,7 @@ export function hasPendingReason() {
 export function cancelPendingReason() {
   if (!reasonResolver) return false;
   resolveReason(null);
-  toast('已取消移动：未填写失败原因，任务保留在原列', 'error');
+  toast(MSG_MOVE_CANCELLED_NO_REASON, 'error');
   closeModals();
   return true;
 }

@@ -25,3 +25,6 @@ export const PRIORITY_LABELS = {
 
 /** 需要强制填写失败原因的目标状态 */
 export const FAIL_STATUS = 'failed';
+
+/** 拖入「失败」列但取消/未填写原因时的统一提示 */
+export const MSG_MOVE_CANCELLED_NO_REASON = '已取消移动：未填写失败原因，任务保留在原列';

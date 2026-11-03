@@ -7,7 +7,6 @@ import { STATUSES } from '../../shared/constants.js';
 /**
  * @typedef {Object} BoardState
  * @property {any[]} issues
- * @property {boolean} loading
  * @property {number | null} editingId
  * @property {Set<number>} expanded   展开变更记录的卡片
  * @property {{ keyword: string, priority: Set<string>, tag: Set<string>, assignee: Set<string> }} filters
@@ -19,7 +18,6 @@ import { STATUSES } from '../../shared/constants.js';
 /** @type {BoardState} */
 export const state = {
   issues: [],
-  loading: false,
   editingId: null,
   expanded: new Set(),
   filters: {

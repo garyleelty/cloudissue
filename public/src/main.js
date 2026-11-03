@@ -37,7 +37,6 @@ const colTabs = $('#colTabs');
 
 /** 拉取整块看板并广播刷新 */
 async function load() {
-  state.loading = true;
   try {
     const data = await api.list();
     state.issues = data.issues ?? [];
@@ -48,8 +47,6 @@ async function load() {
     notify();
   } catch (err) {
     toast(`加载失败：${err.message}`, 'error');
-  } finally {
-    state.loading = false;
   }
 }
 

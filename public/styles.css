@@ -672,6 +672,7 @@ button, input, select, textarea {
    弹窗
    ========================================================================== */
 .modal-root { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; }
+.modal-root[hidden] { display: none; }
 
 .modal-backdrop {
   position: absolute;
@@ -720,6 +721,7 @@ button, input, select, textarea {
 }
 
 .fm-row { display: flex; flex-direction: column; gap: 6px; }
+.fm-row[hidden] { display: none; }
 .fm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
 
 .fm-label { font-size: 12.5px; font-weight: 500; color: var(--text-2); }
