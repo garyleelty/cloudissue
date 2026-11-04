@@ -1577,3 +1577,15 @@ body:has(#batchBar:not([hidden])) .toast-root {
 .drawer .log-item {
   padding: 6px 0;
 }
+
+/* AI 操作者徽标（紫）与「AI 动态」按钮激活态 */
+.log-actor-ai {
+  background: rgba(175, 82, 222, 0.12);
+  color: var(--purple);
+}
+
+#btnAI[aria-pressed='true'] {
+  background: rgba(175, 82, 222, 0.1);
+  color: var(--purple);
+  font-weight: 600;
+}

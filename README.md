@@ -85,7 +85,7 @@ cloudissue/
 Express HTTP 层 (server/index.js)      ← 路由 / 鉴权 / 限流 / 静态资源，持有 MCP Client
    │  MCP over stdio（断连自动重连）
    ▼
-MCP 数据服务 (mcp-server/index.js)     ← 唯一持有 MySQL 连接池，暴露 19 个 tools
+MCP 数据服务 (mcp-server/index.js)     ← 唯一持有 MySQL 连接池，暴露 20 个 tools
    │  mysql2
    ▼
 MySQL 8 (issue_board)
@@ -453,8 +453,9 @@ Streamable HTTP 的 MCP 客户端中配置：
 
 ### 人机协作约定
 
-- **AI 留名**：写操作接受可选 `actor` 参数，会显示在 Web 时间线的操作者徽标上；
-  建议 AI 客户端自报身份（如 `ai:my-agent`），Web 端的操作自动记录登录用户名。
+- **AI 留名**：写操作接受可选 `actor` 参数，会显示在 Web 时间线的操作者徽标上（AI 为紫色标识）；
+  建议 AI 客户端自报身份（如 `ai:my-agent`），Web 端的操作自动记录登录用户名；
+  Web 端「AI 动态」按钮可一键过滤所有被 AI 碰过的 issue。
 - **先读后写**：AI 应先调 `board_summary`（紧凑、含下一步建议）再按需 `issue_list`，
   避免一次性拉全量明细。
 - **乐观锁**：并发场景下把读到的 `version` 作为 `expectedVersion` 传回，
@@ -502,8 +503,8 @@ curl -X POST http://localhost:5173/mcp \
 
 ```bash
 npm run lint       # ESLint 检查
-npm run test:mcp   # MCP 链路冒烟：验证 stdio 传输正常、19 个 tools 全部注册（不需服务）
-npm test           # 端到端集成测试：全链路、业务规则、认证与 AI 接入（109 项断言，需先起服务）
+npm run test:mcp   # MCP 链路冒烟：验证 stdio 传输正常、20 个 tools 全部注册（不需服务）
+npm test           # 端到端集成测试：全链路、业务规则、认证与 AI 接入（115 项断言，需先起服务）
 npm run test:ui    # UI 冒烟（jsdom，86 项断言，不需服务与数据库）
 ```
 

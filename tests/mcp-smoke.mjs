@@ -18,6 +18,7 @@ const EXPECTED = [
   'board_bootstrap',
   'issue_list',
   'issue_get',
+  'issue_search',
   'board_summary',
   'issue_create',
   'issue_update',

@@ -733,6 +733,49 @@ export function createBoardServer() {
     },
   );
 
+  // 7.1) 检索：按条件过滤 issue，AI 的精准查询入口（避免拉全量）
+  server.registerTool(
+    'issue_search',
+    {
+      description:
+        '按条件检索 issue：关键词（标题/描述/#编号）、状态、类型、负责人、优先级；返回过滤结果与 total。找特定 issue 优先用它，而不是 issue_list 拉全量。',
+      inputSchema: {
+        keyword: z.string().max(255).optional().describe('标题/描述/#编号 关键词'),
+        status: StatusEnum.optional(),
+        type: z.enum(ISSUE_TYPES).optional(),
+        assigneeId: z.number().int().positive().nullable().optional(),
+        priority: PriorityEnum.optional(),
+        limit: z.number().int().positive().max(200).optional().default(50),
+        offset: z.number().int().nonnegative().optional().default(0),
+      },
+    },
+    async (args) => {
+      let issues = await fetchBoard();
+
+      if (args.keyword) {
+        const kw = args.keyword.toLowerCase();
+        issues = issues.filter((i) =>
+          `#${i.id} ${i.title} ${i.description}`.toLowerCase().includes(kw),
+        );
+      }
+      if (args.status) issues = issues.filter((i) => i.status === args.status);
+      if (args.type) issues = issues.filter((i) => (i.type || 'task') === args.type);
+      if (args.priority) issues = issues.filter((i) => i.priority === args.priority);
+      if (args.assigneeId !== undefined) {
+        issues = issues.filter(
+          (i) => (args.assigneeId === null ? i.assigneeId == null : i.assigneeId === args.assigneeId),
+        );
+      }
+
+      const total = issues.length;
+      const slice = issues.slice(args.offset, args.offset + args.limit).map((i) => {
+        const { logs, ...rest } = i;
+        return { ...rest, lastChange: logs[logs.length - 1] ?? null };
+      });
+      return ok({ total, limit: args.limit, offset: args.offset, issues: slice });
+    },
+  );
+
   // 7.2) 评论：新增（人/AI 通用；author_name 自报身份并留名时间线）
   server.registerTool(
     'issue_comment_add',

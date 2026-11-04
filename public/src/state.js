@@ -11,7 +11,7 @@ import { STATUSES } from '../../shared/constants.js';
  * @property {{ id: number, username: string, displayName: string } | null} me  当前登录用户
  * @property {number | null} editingId
  * @property {Set<number>} expanded   展开变更记录的卡片
- * @property {{ keyword: string, priority: Set<string>, tag: Set<string>, assignee: Set<string> }} filters
+ * @property {{ keyword: string, priority: Set<string>, tag: Set<string>, assignee: Set<string>, aiOnly: boolean }} filters
  * @property {{ id: number, fromStatus: string } | null} drag
  * @property {string} activeTab
  * @property {Set<number>} selection   批量操作勾选中的卡片
@@ -29,6 +29,7 @@ export const state = {
     priority: new Set(),
     tag: new Set(),
     assignee: new Set(),
+    aiOnly: false,
   },
   drag: null,
   activeTab: STATUSES[0],
@@ -55,6 +56,7 @@ export function resetFilters() {
   state.filters.priority.clear();
   state.filters.tag.clear();
   state.filters.assignee.clear();
+  state.filters.aiOnly = false;
 }
 
 // ------------------------------------------------------------------

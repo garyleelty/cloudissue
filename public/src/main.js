@@ -180,6 +180,14 @@ function bindGlobalEvents() {
     clearSelection();
     $('#fKeyword').value = '';
     $('#btnMine').setAttribute('aria-pressed', 'false');
+    $('#btnAI').setAttribute('aria-pressed', 'false');
+    notify();
+  });
+
+  // 「AI 动态」：只看被 AI 操作过的 issue（actor 以 ai: 开头）
+  $('#btnAI').addEventListener('click', () => {
+    state.filters.aiOnly = !state.filters.aiOnly;
+    $('#btnAI').setAttribute('aria-pressed', String(state.filters.aiOnly));
     notify();
   });
 

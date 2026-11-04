@@ -38,6 +38,9 @@ export const ISSUE_TYPE_LABELS = {
 /** 筛选维度里「未指派」的哨兵值（assignee_id 为空时使用） */
 export const ASSIGNEE_NONE = '_none';
 
+/** AI 操作者在 actor 字段里的自报前缀（如 ai:my-agent） */
+export const AI_ACTOR_PREFIX = 'ai:';
+
 /** 需要强制填写失败原因的目标状态 */
 export const FAIL_STATUS = 'failed';
 

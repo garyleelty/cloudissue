@@ -656,10 +656,6 @@ async function main() {
     JSON.stringify({ type: updTyped.data.issue?.type, assigneeId: updTyped.data.issue?.assigneeId }),
   );
 
-  // 搜索关键词支持 #编号直达（keyword 匹配含 #id）
-  const listAll = await api('/api/issues');
-  const targetCard = (listAll.data.issues || []).find((i) => i.id === typedId);
-
   // board_summary 带 byType
   const sum2 = await mcpCall(rotated.data.token, 6, 'tools/call', { name: 'board_summary', arguments: {} });
   const sumOut = jsonContent(sum2.data);
@@ -686,6 +682,65 @@ async function main() {
   check('清理验证卡成功', delTyped.status === 200, JSON.stringify(delTyped.data));
   const afterTyped = await api(`/api/issues/${typedId}`);
   check('验证卡已删除（详情 404 类错误）', afterTyped.status >= 400, String(afterTyped.status));
+
+  console.log('\n--- 16. issue_search 检索（AI 精准查询） ---');
+  const srchCard = await mcpCall(rotated.data.token, 8, 'tools/call', {
+    name: 'issue_create',
+    arguments: {
+      title: '检索验证卡 searchprobe',
+      type: 'bug',
+      assigneeId: meUser.id,
+      status: 'backlog',
+      actor: 'ai:search-test',
+    },
+  });
+  const srchId = jsonContent(srchCard.data)?.id;
+  check('检索准备：AI 建卡成功', Number.isInteger(srchId), String(srchId));
+
+  const byKw = await mcpCall(rotated.data.token, 9, 'tools/call', {
+    name: 'issue_search',
+    arguments: { keyword: `#${srchId}` },
+  });
+  const byKwOut = jsonContent(byKw.data);
+  check(
+    '关键词 #编号 检索命中',
+    byKwOut?.total === 1 && byKwOut.issues?.[0]?.id === srchId,
+    JSON.stringify(byKwOut).slice(0, 140),
+  );
+
+  const byCombo = await mcpCall(rotated.data.token, 10, 'tools/call', {
+    name: 'issue_search',
+    arguments: { status: 'backlog', type: 'bug', assigneeId: meUser.id },
+  });
+  const byComboOut = jsonContent(byCombo.data);
+  check(
+    '状态+类型+负责人组合检索命中',
+    byComboOut?.issues?.some((i) => i.id === srchId),
+    JSON.stringify(byComboOut).slice(0, 140),
+  );
+
+  const byLimit = await mcpCall(rotated.data.token, 11, 'tools/call', {
+    name: 'issue_search',
+    arguments: { limit: 1, offset: 0 },
+  });
+  const byLimitOut = jsonContent(byLimit.data);
+  check(
+    'limit/offset 分页生效',
+    byLimitOut?.issues?.length === 1 && byLimitOut.total >= 1,
+    JSON.stringify({ total: byLimitOut?.total, n: byLimitOut?.issues?.length }),
+  );
+
+  const none = await mcpCall(rotated.data.token, 12, 'tools/call', {
+    name: 'issue_search',
+    arguments: { keyword: '绝无仅有的字符串xyzq' },
+  });
+  check('无命中时 total 为 0', jsonContent(none.data)?.total === 0, JSON.stringify(jsonContent(none.data)));
+
+  const delSrch = await mcpCall(rotated.data.token, 13, 'tools/call', {
+    name: 'issue_delete',
+    arguments: { id: srchId },
+  });
+  check('清理检索验证卡', jsonContent(delSrch.data)?.deleted === true, JSON.stringify(delSrch.data));
 
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);

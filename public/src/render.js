@@ -9,7 +9,13 @@
 import { state } from './state.js';
 import { filteredIssues, hasActiveFilters } from './filters.js';
 import { esc, fmtDateTime, dueInfo } from './utils.js';
-import { STATUSES, STATUS_LABELS, PRIORITY_LABELS, ISSUE_TYPE_LABELS } from '../../shared/constants.js';
+import {
+  STATUSES,
+  STATUS_LABELS,
+  PRIORITY_LABELS,
+  ISSUE_TYPE_LABELS,
+  AI_ACTOR_PREFIX,
+} from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
@@ -52,7 +58,8 @@ function logItemHtml(log) {
   const toLabel = STATUS_LABELS[log.toStatus] || log.toStatus;
   const reasonHtml = log.reason ? `<div class="log-reason">失败原因：${esc(log.reason)}</div>` : '';
   // 操作者：人（用户名）与 AI（客户端自报身份）都在时间线里留名
-  const actorHtml = log.actor ? `<span class="log-actor">${esc(log.actor)}</span>` : '';
+  const actorCls = (log.actor || '').startsWith(AI_ACTOR_PREFIX) ? ' log-actor-ai' : '';
+  const actorHtml = log.actor ? `<span class="log-actor${actorCls}">${esc(log.actor)}</span>` : '';
   return `
     <div class="log-item" data-to="${esc(log.toStatus)}">
       <span class="log-bar"></span>

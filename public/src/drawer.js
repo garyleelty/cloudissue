@@ -7,7 +7,12 @@ import { state } from './state.js';
 import { api } from './api.js';
 import { toast } from './toast.js';
 import { esc, fmtDateTime, dueInfo } from './utils.js';
-import { STATUS_LABELS, PRIORITY_LABELS, ISSUE_TYPE_LABELS } from '../../shared/constants.js';
+import {
+  STATUS_LABELS,
+  PRIORITY_LABELS,
+  ISSUE_TYPE_LABELS,
+  AI_ACTOR_PREFIX,
+} from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
 let root;
@@ -146,7 +151,8 @@ function commentItemHtml(c, me) {
 function logRowHtml(log) {
   const fromLabel = log.fromStatus ? STATUS_LABELS[log.fromStatus] : '新建';
   const toLabel = STATUS_LABELS[log.toStatus] || log.toStatus;
-  const actorHtml = log.actor ? `<span class="log-actor">${esc(log.actor)}</span>` : '';
+  const actorCls = (log.actor || '').startsWith(AI_ACTOR_PREFIX) ? ' log-actor-ai' : '';
+  const actorHtml = log.actor ? `<span class="log-actor${actorCls}">${esc(log.actor)}</span>` : '';
   return `
     <div class="log-item">
       <span class="log-bar"></span>
