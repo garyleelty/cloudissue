@@ -15,7 +15,7 @@ import {
 import { api } from './api.js';
 import { toast } from './toast.js';
 import * as render from './render.js';
-import { syncDropdowns, closeAllDropdowns } from './dropdowns.js';
+import { syncDropdowns, closeAllDropdowns, bindDropdowns } from './dropdowns.js';
 import { initDnd } from './dnd.js';
 import { initCrossTabSync } from './sync.js';
 import { filteredIssues } from './filters.js';
@@ -313,6 +313,7 @@ async function init() {
   initDnd({ onChanged: load });
   initModals({ onChanged: load });
   initCrossTabSync(load);
+  bindDropdowns();
   bindGlobalEvents();
   bindBatchBar();
   bindAuthView();
