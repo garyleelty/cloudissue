@@ -72,6 +72,56 @@ export const api = {
   createBoard: (payload) => request('/api/boards', { method: 'POST', body: JSON.stringify(payload) }),
   /** @param {number} id 删除看板，其下任务级联删除 */
   deleteBoard: (id) => request(`/api/boards/${id}`, { method: 'DELETE' }),
+  /**
+   * 导出 CSV：携带当前筛选条件，服务端与看板同口径过滤。
+   * 返回 { blob, count, filename }——blob 供下载，count 供 toast 展示。
+   * 不走 request()：这里要的是 Blob 与响应头，不是 JSON。
+   * @param {{ boardId: number | null, q?: string, priority?: string, tag?: string, assignee?: string, aiOnly?: boolean }} params
+   */
+  exportCsv: async (params) => {
+    const qs = new URLSearchParams();
+    if (params.boardId) qs.set('boardId', String(params.boardId));
+    if (params.q) qs.set('q', params.q);
+    if (params.priority) qs.set('priority', params.priority);
+    if (params.tag) qs.set('tag', params.tag);
+    if (params.assignee) qs.set('assignee', params.assignee);
+    if (params.aiOnly) qs.set('aiOnly', '1');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(`/api/export/csv?${qs}`, { signal: controller.signal });
+    } catch (err) {
+      throw Object.assign(
+        new Error(err?.name === 'AbortError' ? '请求超时，请检查网络后重试' : '网络异常，请检查连接后重试'),
+        { status: 0 },
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) {
+      if (res.status === 401) window.dispatchEvent(new CustomEvent('ci:unauthorized'));
+      let msg = `请求失败（${res.status}）`;
+      try {
+        msg = (await res.json()).error || msg;
+      } catch {
+        /* 非 JSON 错误体 */
+      }
+      throw Object.assign(new Error(msg), { status: res.status });
+    }
+
+    // 中文文件名在 RFC 5987 的 filename* 里；同源响应可读
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const utf8Name = disposition.match(/filename\*=UTF-8''([^;]+)/);
+    const filename = utf8Name ? decodeURIComponent(utf8Name[1]) : 'cloudissue-export.csv';
+    return {
+      blob: await res.blob(),
+      count: Number(res.headers.get('X-Export-Count') || 0),
+      filename,
+    };
+  },
   /** issue 详情（含评论全文） */
   detail: (id) => request(`/api/issues/${id}`),
   /** 全部用户（负责人选择器等） */

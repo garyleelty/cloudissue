@@ -158,6 +158,18 @@ globalThis.fetch = async (url, opts = {}) => {
       }),
     };
   }
+  // 导出 CSV：服务端返回 Blob + 响应头（与真实实现同构）
+  if (u.includes('/api/export/csv')) {
+    const disposition =
+      `attachment; filename="cloudissue-export.csv"; filename*=UTF-8''` +
+      encodeURIComponent('cloudissue-默认看板-2026-11-05.csv');
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'Content-Disposition': disposition, 'X-Export-Count': String(FIXTURE.length) }),
+      blob: async () => new Blob(['\uFEFF#编号,标题'], { type: 'text/csv' }),
+    };
+  }
   if (u.includes('/api/issues')) {
     // 多看板：?boardId= 只返回该看板的任务（与服务端语义一致）
     const bid = Number(u.match(/boardId=(\d+)/)?.[1]);
@@ -833,6 +845,125 @@ console.log('\n--- toast 去重 ---');
     String(document.querySelectorAll('#toastRoot .toast').length),
   );
   check('相同文案保留的是新类型', document.querySelector('#toastRoot .toast').dataset.type === 'error');
+}
+
+// ------------------------------------------------------------------
+// CSV 导出：shared 纯函数（转义/匹配口径）+ 下载触发
+// ------------------------------------------------------------------
+console.log('\n--- CSV 导出 ---');
+{
+  const csvMod = await import('../shared/csv.js');
+  const filterMod = await import('../shared/issue-filters.js');
+
+  check(
+    'toCsv 简单行直接拼接',
+    csvMod.toCsv([
+      ['a', 'b'],
+      ['1', '2'],
+    ]) === 'a,b\r\n1,2',
+  );
+  check(
+    'toCsv 转义逗号/引号/换行',
+    csvMod.toCsv([['含,逗号', '含"引号', '含\n换行', '普通']]) === '"含,逗号","含""引号","含\n换行",普通',
+    csvMod.toCsv([['含,逗号', '含"引号', '含\n换行', '普通']]),
+  );
+  check('toCsv null/undefined 输出空字段', csvMod.toCsv([[null, undefined, 0]]) === ',,0');
+
+  // 匹配口径：与 Web 端看板同一份（shared/issue-filters.js）
+  const issue = {
+    id: 7,
+    title: '修复登录超时',
+    description: '会话 7 天过期',
+    priority: 'high',
+    assignee: '',
+    assigneeId: 3,
+    tags: ['后端'],
+    logs: [{ actor: 'ai:bot' }],
+  };
+  check('关键词命中 #编号', filterMod.matchesFilters(issue, { keyword: '#7' }) === true);
+  check('关键词命中描述', filterMod.matchesFilters(issue, { keyword: '过期' }) === true);
+  check(
+    '多维度 AND（优先级+标签）',
+    filterMod.matchesFilters(issue, { priority: new Set(['high']), tag: new Set(['后端']) }) === true,
+  );
+  check('优先级不匹配被排除', filterMod.matchesFilters(issue, { priority: new Set(['low']) }) === false);
+  check(
+    'assignee 键取用户 id',
+    filterMod.assigneeKey(issue) === '3' &&
+      filterMod.matchesFilters(issue, { assignee: new Set(['3']) }) === true,
+  );
+  check('未指派卡命中 _none 哨兵', filterMod.assigneeKey({ assignee: '', assigneeId: null }) === '_none');
+  check('aiOnly 命中 AI 操作痕', filterMod.matchesFilters(issue, { aiOnly: true }) === true);
+  check(
+    '无 AI 痕的卡被 aiOnly 排除',
+    filterMod.matchesFilters({ ...issue, logs: [] }, { aiOnly: true }) === false,
+  );
+
+  // 查询参数解析：与 Web 端一致的语义
+  const parsed = filterMod.parseExportFilters(new URLSearchParams('q=%237&priority=high,low&tag=&aiOnly=1'));
+  check(
+    'parseExportFilters 解析 q/多选/aiOnly',
+    parsed.keyword === '#7' &&
+      parsed.priority.has('high') &&
+      parsed.priority.has('low') &&
+      parsed.tag.size === 0 &&
+      parsed.aiOnly === true,
+    JSON.stringify(parsed),
+  );
+
+  // 下载触发：stub blob URL 与 a.click，点击按钮走完整链路
+  globalThis.HTMLAnchorElement = window.HTMLAnchorElement;
+  const origCreate = window.URL.createObjectURL;
+  const origRevoke = window.URL.revokeObjectURL;
+  window.URL.createObjectURL = () => 'blob:mock-url';
+  window.URL.revokeObjectURL = () => {};
+  let clicked = false;
+  let downloadName = '';
+  window.HTMLAnchorElement.prototype.click = function () {
+    clicked = true;
+    downloadName = this.download;
+  };
+
+  // 记录导出请求 URL（与多看板段的 spy 独立）
+  const baseFetch2 = globalThis.fetch;
+  const exportUrls = [];
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('/api/export/csv')) exportUrls.push(String(url));
+    return baseFetch2(url, opts);
+  };
+  window.fetch = globalThis.fetch;
+
+  // 带筛选：只导出高优先级（fixture 中 2 张 high）
+  document.querySelector('#toastRoot').innerHTML = '';
+  s.filters.priority = new Set(['high']);
+  notify();
+  $('#btnExport').disabled = false;
+  $('#btnExport').click();
+  await wait(150);
+
+  check(
+    '导出触发浏览器下载',
+    clicked === true && downloadName === 'cloudissue-默认看板-2026-11-05.csv',
+    downloadName,
+  );
+  check(
+    '导出请求携带 boardId 与筛选参数',
+    exportUrls.some((u) => u.includes('boardId=1') && u.includes('priority=high')),
+    exportUrls.join(' | '),
+  );
+  check(
+    '导出成功 toast 带数量',
+    document.querySelector('#toastRoot .toast')?.textContent ===
+      `已导出 5 个任务：cloudissue-默认看板-2026-11-05.csv`,
+    document.querySelector('#toastRoot .toast')?.textContent,
+  );
+
+  s.filters.priority.clear();
+  notify();
+  globalThis.fetch = baseFetch2;
+  window.fetch = baseFetch2;
+  window.URL.createObjectURL = origCreate;
+  window.URL.revokeObjectURL = origRevoke;
 }
 
 // ------------------------------------------------------------------

@@ -901,6 +901,105 @@ async function main() {
   const delNb = await del(`/api/boards/${nbId}`);
   check('清理集成测试看板', delNb.status === 200, JSON.stringify(delNb.data));
 
+  console.log('\n--- 18. CSV 导出（与看板同口径） ---');
+  // 未登录 / 非法参数（沿用第 17 节的临时匿名 jar 技巧）
+  cookieJar = '';
+  const anonExport = await api('/api/export/csv');
+  check('未登录导出返回 401', anonExport.status === 401, String(anonExport.status));
+  cookieJar = savedJar;
+  const badExport = await api('/api/export/csv?boardId=abc');
+  check('非法 boardId 导出返回 400', badExport.status === 400, String(badExport.status));
+
+  // 造数据：专用导出看板，覆盖类型/优先级/标签/指派/描述换行/引号
+  // CSV 响应体不是 JSON，用原生 fetch 拿原始 Response
+  const rawGet = (path) => {
+    const headers = {};
+    if (cookieJar) headers.Cookie = cookieJar;
+    return fetch(BASE + path, { headers });
+  };
+  const expBoard = await post('/api/boards', { name: `导出_${uniq}` });
+  const expBd = expBoard.data.board?.id;
+  const mkCard = (n, extra = {}) =>
+    mcpCall(rotated.data.token, 30 + n, 'tools/call', {
+      name: 'issue_create',
+      arguments: { boardId: expBd, actor: 'ai:it', ...extra },
+    });
+  await mkCard(1, {
+    title: `导出高优_${uniq}`,
+    description: '含,逗号、"引号"与\n换行的描述',
+    priority: 'high',
+    type: 'feature',
+    tags: ['标签A'],
+    assigneeId: meUser.id,
+    status: 'planning',
+  });
+  await mkCard(2, { title: `导出低优_${uniq}`, priority: 'low', type: 'bug', status: 'backlog' });
+  await mkCard(3, { title: `导出已完成_${uniq}`, priority: 'medium', status: 'done' });
+  const defaultCard = await post('/api/issues', { title: `默认板导出卡_${uniq}` });
+
+  // 全量导出该板：行数、BOM、表头、Content-Disposition
+  const expAll = await rawGet(`/api/export/csv?boardId=${expBd}`);
+  check(
+    '导出返回 200 且为 CSV',
+    expAll.status === 200 && /text\/csv/.test(expAll.headers.get('content-type') || ''),
+    String(expAll.status),
+  );
+  check(
+    '导出带 X-Export-Count',
+    expAll.headers.get('x-export-count') === '3',
+    String(expAll.headers.get('x-export-count')),
+  );
+  check(
+    'Content-Disposition 带 UTF-8 文件名',
+    /filename\*=UTF-8''/.test(expAll.headers.get('content-disposition') || ''),
+  );
+  // fetch 的 Response.text() 按 UTF-8 解码会剥掉 BOM，因此 BOM 用原始字节断言
+  const expAllBytes = new Uint8Array(await expAll.arrayBuffer());
+  check(
+    'CSV 以 UTF-8 BOM（EF BB BF）开头',
+    expAllBytes[0] === 0xef && expAllBytes[1] === 0xbb && expAllBytes[2] === 0xbf,
+    String(expAllBytes.slice(0, 3)),
+  );
+  const csvText = new TextDecoder().decode(expAllBytes).replace(/^\uFEFF/, '');
+  const csvLines = csvText.split('\r\n').filter(Boolean);
+  check('CSV 表头为中文列名', csvLines[0].startsWith('#编号,标题,类型,状态,优先级'), csvLines[0]);
+  check('全量导出行数正确（3 卡 + 表头）', csvLines.length === 4, String(csvLines.length));
+  check('导出不串板（无默认板的卡）', !csvText.includes(`默认板导出卡_${uniq}`));
+
+  // 同口径过滤：关键词 / 优先级 / 标签 / 负责人 / aiOnly
+  const parseBody = (text) => text.split('\r\n').filter(Boolean).slice(1); // 去表头
+  const expQ = await rawGet(`/api/export/csv?boardId=${expBd}&aiOnly=1`);
+  const qBody = parseBody(await expQ.text());
+  check('aiOnly 过滤命中 AI 建的 3 张卡', qBody.length === 3, String(qBody.length));
+  const expHigh = await rawGet(`/api/export/csv?boardId=${expBd}&priority=high`);
+  const highBody = parseBody(await expHigh.text());
+  check(
+    'priority 过滤只留高优',
+    highBody.length === 1 && highBody[0].includes(`导出高优_${uniq}`),
+    highBody.join(' ; ').slice(0, 120),
+  );
+  const expTag = await rawGet(`/api/export/csv?boardId=${expBd}&tag=${encodeURIComponent('标签A')}`);
+  check('tag 过滤命中打标卡', parseBody(await expTag.text()).length === 1);
+  const expAssignee = await rawGet(`/api/export/csv?boardId=${expBd}&assignee=${meUser.id}`);
+  check('assignee 过滤命中指派卡', parseBody(await expAssignee.text()).length === 1);
+
+  // RFC 4180 转义：逗号/引号/换行的字段被引号包裹，行数不被换行破坏
+  check('换行/逗号/引号字段被正确转义', csvText.includes('"含,逗号、""引号""与\n换行的描述"'), '');
+
+  // 排序与看板一致：五列顺序 + 列内 position（backlog → planning → done）
+  const orderLine = parseBody(csvText).map((l) => l.split(',')[3]);
+  check(
+    '导出按五列顺序排列',
+    JSON.stringify(orderLine) === JSON.stringify(['未规划', '规划中', '已完成']),
+    orderLine.join('→'),
+  );
+
+  // 清理
+  const delExpBoard = await del(`/api/boards/${expBd}`);
+  check('清理导出测试看板', delExpBoard.status === 200, JSON.stringify(delExpBoard.data));
+  const delDefaultCard = await del(`/api/issues/${defaultCard.data.id}`);
+  check('清理默认板导出验证卡', delDefaultCard.status === 200, JSON.stringify(delDefaultCard.data));
+
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
   console.log(`=====================================\n`);

@@ -20,6 +20,9 @@ import { logger } from './logger.js';
 import { callTool, closeMcp } from './mcp-client.js';
 import { authRouter, authRequired } from './auth.js';
 import { mcpHttpRouter, authByToken } from './mcp-http.js';
+import { STATUSES, STATUS_LABELS, PRIORITY_LABELS, ISSUE_TYPE_LABELS } from '../shared/constants.js';
+import { matchesFilters, parseExportFilters } from '../shared/issue-filters.js';
+import { toCsv, CSV_BOM } from '../shared/csv.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(here, '..');
@@ -177,6 +180,74 @@ app.delete(
     }
     const data = await callTool('board_delete', { id });
     res.json(data);
+  }),
+);
+
+/**
+ * 导出 CSV：按当前筛选条件导出 issue 清单。
+ * 数据经 MCP 的 issue_list 拉取（不在 HTTP 层碰 SQL）；
+ * 过滤复用 shared/issue-filters.js——与 Web 端看板同一份口径，所见即所得。
+ * 排序与看板一致：按五列顺序 + 列内位置。
+ */
+app.get(
+  '/api/export/csv',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const boardId = boardIdOf(req);
+    if (boardId === undefined) return res.status(400).json({ error: '非法的看板 ID' });
+
+    const { issues = [] } = await callTool('issue_list', boardId ? { boardId } : {});
+    const filters = parseExportFilters(req.query);
+    const statusRank = Object.fromEntries(STATUSES.map((s, i) => [s, i]));
+    const rows = issues
+      .filter((i) => matchesFilters(i, filters))
+      .sort(
+        (a, b) =>
+          (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9) || (a.position ?? 0) - (b.position ?? 0),
+      );
+
+    const table = [
+      [
+        '#编号',
+        '标题',
+        '类型',
+        '状态',
+        '优先级',
+        '负责人',
+        '标签',
+        '截止日期',
+        '评论数',
+        '描述',
+        '创建时间',
+        '更新时间',
+      ],
+      ...rows.map((i) => [
+        i.id,
+        i.title,
+        ISSUE_TYPE_LABELS[i.type]?.label || i.type || '任务',
+        STATUS_LABELS[i.status] || i.status,
+        `${PRIORITY_LABELS[i.priority] || i.priority}优先级`,
+        i.assignee || '未指派',
+        (i.tags || []).join(' '),
+        i.dueDate || '',
+        i.commentCount ?? 0,
+        i.description || '',
+        i.createdAt || '',
+        i.updatedAt || '',
+      ]),
+    ];
+
+    const boardName = rows[0]?.boardName || (boardId ? `看板${boardId}` : '全部看板');
+    const filename = `cloudissue-${boardName}-${new Date().toISOString().slice(0, 10)}.csv`;
+    // filename 只放 ASCII 兜底；中文文件名走 RFC 5987 的 filename*
+    const asciiName = `cloudissue-export-${boardId || 'all'}-${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('X-Export-Count', String(rows.length));
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    );
+    res.send(CSV_BOM + toCsv(table));
   }),
 );
 

@@ -23,6 +23,7 @@
 | 跨标签页同步     | 同一浏览器多开时，一处改动其他标签页自动跟上；切回前台再兜底拉一次                                                    |
 | 并发保护         | 任务带 `version` 版本号，编辑/移动/批量操作均携带；被他人抢先修改则返回 409，不静默覆盖                               |
 | 组合筛选         | 关键词（标题 & 描述）+ 优先级 + 标签 + 负责人，多条件 AND 组合，支持一键清空                                          |
+| CSV 导出         | 按当前筛选条件一键导出任务清单（UTF-8 BOM，Excel 直接打开）；与看板同一份过滤口径，所见即所得                         |
 | 列计数           | 每列顶部实时显示 `筛选后数量/总数`，如 `3/10`                                                                         |
 | 持久化           | MySQL 8，数据读写全部经 MCP；仅在数据表为空时初始化示例任务                                                           |
 | 安全加固         | helmet 安全头、接口限流、错误信息脱敏、XSS 转义、环境变量 fail-fast 校验                                              |
@@ -347,9 +348,13 @@ npx @modelcontextprotocol/inspector node mcp-server/index.js
 | `POST`   | `/api/auth/logout`           | 登出（清 cookie）                                                                        |
 | `GET`    | `/api/auth/me`               | 当前会话用户                                                                             |
 | `PUT`    | `/api/auth/password`         | 改密：`{ oldPassword, newPassword }`，**所有旧会话立即失效**                             |
-| `GET`    | `/api/issues`                | 返回全部任务（含 `tags`/`logs`/`commentCount`）                                          |
+| `GET`    | `/api/issues`                | 返回任务列表（含 `tags`/`logs`/`commentCount`）；`?boardId=` 只取该看板                  |
 | `GET`    | `/api/issues/:id`            | issue 详情（含评论全文）                                                                 |
 | `GET`    | `/api/users`                 | 用户列表（负责人选择器，脱敏）                                                           |
+| `GET`    | `/api/boards`                | 看板列表（多看板切换器与 AI 发现入口）                                                   |
+| `POST`   | `/api/boards`                | 新建看板：`{ name, description? }`，name 唯一                                            |
+| `DELETE` | `/api/boards/:id`            | 删除看板（任务级联删除；至少保留一块）                                                   |
+| `GET`    | `/api/export/csv`            | 按当前筛选导出 CSV：`?boardId=&q=&priority=&tag=&assignee=&aiOnly=`（与看板同口径）      |
 | `POST`   | `/api/issues/:id/comments`   | 添加评论：`{ body }`                                                                     |
 | `DELETE` | `/api/comments/:id?issueId=` | 删除评论（仅作者本人，否则 403）                                                         |
 | `POST`   | `/api/issues`                | 新建任务                                                                                 |

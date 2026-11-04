@@ -40,6 +40,7 @@ import {
   refresh as refreshDrawer,
 } from './drawer.js';
 import { initListView, renderList, resetListPage } from './listview.js';
+import { downloadBlob } from './utils.js';
 import { STATUSES, STATUS_LABELS, FAIL_STATUS, MOBILE_BREAKPOINT } from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -119,6 +120,7 @@ function showAuth() {
   state.currentBoardId = null;
   closeDrawer();
   $('#boardSwitch').hidden = true;
+  $('#btnExport').disabled = true;
   authView.hidden = false;
   $('#userChip').hidden = true;
   $('#btnLogout').hidden = true;
@@ -137,6 +139,7 @@ function showBoard(user) {
   $('#btnLogout').hidden = false;
   // 先看板列表、后任务：load 依赖 currentBoardId，顺序不能反
   loadBoards().then((ok) => {
+    $('#btnExport').disabled = !ok;
     if (ok) load();
     else notify(); // 没有任何看板：渲染空看板
   });
@@ -211,6 +214,29 @@ function bindGlobalEvents() {
     $('#btnMine').setAttribute('aria-pressed', 'false');
     $('#btnAI').setAttribute('aria-pressed', 'false');
     notify();
+  });
+
+  // 导出 CSV：把当前筛选原样交给服务端，与看板同一份过滤口径（shared/issue-filters.js）
+  $('#btnExport').addEventListener('click', async () => {
+    const btn = $('#btnExport');
+    const f = state.filters;
+    btn.disabled = true;
+    try {
+      const { blob, count, filename } = await api.exportCsv({
+        boardId: state.currentBoardId,
+        q: f.keyword || undefined,
+        priority: f.priority.size ? [...f.priority].join(',') : undefined,
+        tag: f.tag.size ? [...f.tag].join(',') : undefined,
+        assignee: f.assignee.size ? [...f.assignee].join(',') : undefined,
+        aiOnly: f.aiOnly || undefined,
+      });
+      downloadBlob(blob, filename);
+      toast(count ? `已导出 ${count} 个任务：${filename}` : '没有匹配的任务可导出', count ? 'success' : '');
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = !hasBoard();
+    }
   });
 
   // 「AI 动态」：只看被 AI 操作过的 issue（actor 以 ai: 开头）

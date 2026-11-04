@@ -55,3 +55,20 @@ export function dueInfo(issue) {
 
   return { text, cls };
 }
+
+/**
+ * 触发浏览器下载一个 Blob（导出 CSV 用）。
+ * a 元素不进 DOM 也能 click，但为了兼容部分环境仍挂一下再移除。
+ * @param {Blob} blob
+ * @param {string} filename
+ */
+export function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
