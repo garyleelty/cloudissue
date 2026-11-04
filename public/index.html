@@ -32,6 +32,40 @@
           </div>
         </div>
 
+        <!-- 注意：这里有意不带 data-filter——bindDropdowns 只装配筛选下拉，
+             看板切换器由 boards.js 自己绑定事件 -->
+        <div class="board-switch dropdown" id="boardSwitch" hidden>
+          <button class="btn btn-ghost drop-trigger" type="button" aria-expanded="false" title="切换看板">
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3" y="3" width="7" height="18" rx="2"></rect>
+              <rect x="14" y="3" width="7" height="11" rx="2"></rect>
+            </svg>
+            <span class="drop-label" id="boardLabel">看板</span>
+            <svg
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          <div class="drop-panel" id="panelBoard" role="listbox" aria-label="看板列表"></div>
+        </div>
+
         <div class="topbar-actions">
           <span id="healthDot" class="health" title="数据链路状态">
             <i class="dot"></i><span id="healthText">连接中…</span>
@@ -333,6 +367,48 @@
             <button class="btn btn-danger" id="confirmOk" type="button">确认删除</button>
           </footer>
         </div>
+      </div>
+
+      <!-- 新建看板 -->
+      <div
+        class="modal modal-sm"
+        id="modalBoard"
+        hidden
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="boardFormTitle"
+      >
+        <header class="modal-head">
+          <h2 id="boardFormTitle">新建看板</h2>
+          <button class="icon-btn" type="button" data-close="1" aria-label="关闭">
+            <svg
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            >
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+        </header>
+        <form id="boardForm" class="modal-body" novalidate>
+          <label class="fm-row">
+            <span class="fm-label">看板名 <em>*</em></span>
+            <input name="name" type="text" maxlength="64" required placeholder="如：产品规划 / 缺陷跟踪" />
+          </label>
+          <label class="fm-row">
+            <span class="fm-label">说明</span>
+            <input name="description" type="text" maxlength="255" placeholder="一句话说明这块看板的用途" />
+          </label>
+          <p class="form-error" id="boardFormError" hidden></p>
+          <footer class="modal-foot">
+            <button class="btn btn-ghost" type="button" data-close="1">取消</button>
+            <button class="btn btn-primary" type="submit">创建</button>
+          </footer>
+        </form>
       </div>
 
       <!-- 拖入失败列：填写原因 -->

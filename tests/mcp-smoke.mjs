@@ -16,6 +16,9 @@ const EXPECTED = [
   // 看板
   'db_health',
   'board_bootstrap',
+  'board_list',
+  'board_create',
+  'board_delete',
   'issue_list',
   'issue_get',
   'issue_search',

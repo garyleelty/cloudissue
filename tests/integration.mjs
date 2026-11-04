@@ -742,6 +742,165 @@ async function main() {
   });
   check('清理检索验证卡', jsonContent(delSrch.data)?.deleted === true, JSON.stringify(delSrch.data));
 
+  console.log('\n--- 17. 多看板 workspace ---');
+  // 未登录不可见：本节在登录之后执行，先暂存 cookie jar 模拟匿名访问
+  const savedJar = cookieJar;
+  cookieJar = '';
+  const anonBoards = await api('/api/boards');
+  check('未登录读取看板列表返回 401', anonBoards.status === 401, JSON.stringify(anonBoards.data));
+  const anonBoardCreate = await post('/api/boards', { name: '匿名板' });
+  check('未登录新建看板返回 401', anonBoardCreate.status === 401, JSON.stringify(anonBoardCreate.data));
+  cookieJar = savedJar;
+
+  // 默认看板：历史库由 schema 幂等补种，一定存在
+  const boardsRes = await api('/api/boards');
+  const boards = boardsRes.data.boards || [];
+  const defaultBoard = boards.find((b) => b.name === '默认看板');
+  check(
+    '看板列表包含默认看板',
+    boardsRes.status === 200 && Boolean(defaultBoard),
+    JSON.stringify(boards).slice(0, 200),
+  );
+  check('看板带 issueCount 字段', Number.isInteger(defaultBoard?.issueCount), JSON.stringify(defaultBoard));
+
+  // 新建与重名
+  const nbName = `看板_${uniq}`;
+  const nb = await post('/api/boards', { name: nbName, description: '集成测试用' });
+  check(
+    '新建看板返回 201 与看板信息',
+    nb.status === 201 && nb.data.board?.name === nbName,
+    JSON.stringify(nb.data),
+  );
+  const nbId = nb.data.board?.id;
+  const dupBoard = await post('/api/boards', { name: nbName });
+  check('重名看板被拒绝', dupBoard.status === 400, JSON.stringify(dupBoard.data));
+  const emptyName = await post('/api/boards', { name: '   ' });
+  check('空看板名被拒绝', emptyName.status === 400, JSON.stringify(emptyName.data));
+
+  // AI 在新看板建卡：boardId 归属写入
+  const nbCard = await mcpCall(rotated.data.token, 20, 'tools/call', {
+    name: 'issue_create',
+    arguments: { title: `跨看板卡_${uniq}`, boardId: nbId, actor: 'ai:it' },
+  });
+  const nbCardIssue = jsonContent(nbCard.data)?.issue;
+  check(
+    'AI 在新看板建卡成功且归属正确',
+    Number.isInteger(nbCardIssue?.id) && nbCardIssue.boardId === nbId && nbCardIssue.boardName === nbName,
+    JSON.stringify(nbCard.data).slice(0, 200),
+  );
+  const nbCardId = nbCardIssue?.id;
+
+  // 看板隔离：列表按 boardId 过滤
+  const listNb = await api(`/api/issues?boardId=${nbId}`);
+  check(
+    '新看板列表只含自己的卡',
+    listNb.status === 200 && listNb.data.issues?.length === 1 && listNb.data.issues[0].id === nbCardId,
+    JSON.stringify(listNb.data).slice(0, 200),
+  );
+  const listDef = await api(`/api/issues?boardId=${defaultBoard.id}`);
+  check('默认看板列表不含新看板的卡', !(listDef.data.issues || []).some((i) => i.id === nbCardId));
+  const listAll = await api('/api/issues');
+  check(
+    '不带 boardId 返回全部看板的卡',
+    (listAll.data.issues || []).some((i) => i.id === nbCardId),
+  );
+  const badBoardList = await api('/api/issues?boardId=abc');
+  check('非法 boardId 返回 400', badBoardList.status === 400, JSON.stringify(badBoardList.data));
+
+  // 检索按看板过滤
+  const srchNb = await mcpCall(rotated.data.token, 21, 'tools/call', {
+    name: 'issue_search',
+    arguments: { boardId: nbId },
+  });
+  const srchNbOut = jsonContent(srchNb.data);
+  check(
+    'issue_search 按看板过滤',
+    srchNbOut?.total === 1 && srchNbOut.issues?.every((i) => i.boardId === nbId),
+    JSON.stringify(srchNbOut).slice(0, 160),
+  );
+
+  // board_summary：看板清单 + 单看板统计
+  const sumAll = await mcpCall(rotated.data.token, 22, 'tools/call', {
+    name: 'board_summary',
+    arguments: {},
+  });
+  check(
+    'board_summary 带全部看板清单',
+    (jsonContent(sumAll.data)?.boards || []).some((b) => b.id === nbId),
+    JSON.stringify(jsonContent(sumAll.data)?.boards).slice(0, 200),
+  );
+  const sumNb = await mcpCall(rotated.data.token, 23, 'tools/call', {
+    name: 'board_summary',
+    arguments: { boardId: nbId },
+  });
+  check(
+    'board_summary 单看板统计 total=1',
+    jsonContent(sumNb.data)?.total === 1,
+    JSON.stringify(jsonContent(sumNb.data)).slice(0, 160),
+  );
+
+  // 跨看板移动：issue_update boardId
+  const mvBoard = await mcpCall(rotated.data.token, 24, 'tools/call', {
+    name: 'issue_update',
+    arguments: { id: nbCardId, boardId: defaultBoard.id, actor: 'ai:it' },
+  });
+  check(
+    'issue_update 可把卡移到另一个看板',
+    jsonContent(mvBoard.data)?.issue?.boardId === defaultBoard.id,
+    JSON.stringify(jsonContent(mvBoard.data)).slice(0, 200),
+  );
+  const listDef2 = await api(`/api/issues?boardId=${defaultBoard.id}`);
+  check(
+    '移动后默认看板能看到该卡',
+    (listDef2.data.issues || []).some((i) => i.id === nbCardId),
+  );
+
+  // 不存在的看板：MCP SDK 把 McpError 包装为 isError 结果，错误码在文本前缀里
+  const ghostBoard = await mcpCall(rotated.data.token, 25, 'tools/call', {
+    name: 'issue_create',
+    arguments: { title: '幽灵看板卡', boardId: 999999 },
+  });
+  const ghostText = ghostBoard.data?.result?.content?.[0]?.text || '';
+  check(
+    '指定不存在的看板建卡被拒绝（isError + -32602 前缀）',
+    jsonContent(ghostBoard.data) === null &&
+      ghostBoard.data?.result?.isError === true &&
+      ghostText.startsWith('MCP error -32602'),
+    JSON.stringify(ghostBoard.data).slice(0, 200),
+  );
+
+  // 删除看板：任务级联消失
+  const tmp = await post('/api/boards', { name: `临时_${uniq}` });
+  const tmpId = tmp.data.board?.id;
+  const tmpCard = await mcpCall(rotated.data.token, 26, 'tools/call', {
+    name: 'issue_create',
+    arguments: { title: `随板消失_${uniq}`, boardId: tmpId },
+  });
+  const tmpCardId = jsonContent(tmpCard.data)?.id;
+  const delTmp = await del(`/api/boards/${tmpId}`);
+  check(
+    '删除看板返回成功',
+    delTmp.status === 200 && delTmp.data.deleted === true,
+    JSON.stringify(delTmp.data),
+  );
+  const tmpCardGone = await api(`/api/issues/${tmpCardId}`);
+  check(
+    '看板删除后其任务级联删除',
+    tmpCardGone.status === 400 || tmpCardGone.status === 404,
+    String(tmpCardGone.status),
+  );
+  const boardsAfter = await api('/api/boards');
+  check('看板列表不再包含已删看板', !(boardsAfter.data.boards || []).some((b) => b.id === tmpId));
+
+  // 清理：跨看板卡 + 测试看板（默认看板绝不动——里面有示例数据与用户数据）
+  const delMovedCard = await mcpCall(rotated.data.token, 27, 'tools/call', {
+    name: 'issue_delete',
+    arguments: { id: nbCardId },
+  });
+  check('清理跨看板移动卡', jsonContent(delMovedCard.data)?.deleted === true);
+  const delNb = await del(`/api/boards/${nbId}`);
+  check('清理集成测试看板', delNb.status === 200, JSON.stringify(delNb.data));
+
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
   console.log(`=====================================\n`);

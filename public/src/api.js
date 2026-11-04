@@ -64,7 +64,14 @@ export const api = {
 
   // ---- 基础 ----
   health: () => request('/api/health'),
-  list: () => request('/api/issues'),
+  /** @param {number | null} boardId 传 null 拉全部看板的任务 */
+  list: (boardId = null) => request(`/api/issues${boardId ? `?boardId=${boardId}` : ''}`),
+  /** 全部看板（多看板切换器） */
+  boards: () => request('/api/boards'),
+  /** @param {{ name: string, description?: string }} payload */
+  createBoard: (payload) => request('/api/boards', { method: 'POST', body: JSON.stringify(payload) }),
+  /** @param {number} id 删除看板，其下任务级联删除 */
+  deleteBoard: (id) => request(`/api/boards/${id}`, { method: 'DELETE' }),
   /** issue 详情（含评论全文） */
   detail: (id) => request(`/api/issues/${id}`),
   /** 全部用户（负责人选择器等） */

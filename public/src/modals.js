@@ -24,10 +24,13 @@ const modalRoot = $('#modalRoot');
 const modalForm = $('#modalForm');
 const modalConfirm = $('#modalConfirm');
 const modalReason = $('#modalReason');
+const modalBoard = $('#modalBoard');
 const issueForm = $('#issueForm');
 
 /** @type {() => Promise<void>} */
 let onChanged = async () => {};
+/** @type {(board: any) => Promise<void>} 删除看板成功后的收尾（重载看板与任务） */
+let onBoardDeleted = async () => {};
 /** @type {any | null} */
 let pendingDelete = null;
 /** @type {((v: string | null) => void) | null} */
@@ -38,14 +41,14 @@ const field = (name) => issueForm.elements.namedItem(name);
 
 export function openModal(which) {
   modalRoot.hidden = false;
-  [modalForm, modalConfirm, modalReason].forEach((m) => {
+  [modalForm, modalConfirm, modalReason, modalBoard].forEach((m) => {
     m.hidden = m !== which;
   });
 }
 
 export function closeModals() {
   modalRoot.hidden = true;
-  [modalForm, modalConfirm, modalReason].forEach((m) => {
+  [modalForm, modalConfirm, modalReason, modalBoard].forEach((m) => {
     m.hidden = true;
   });
 }
@@ -165,6 +168,9 @@ async function submitForm(e) {
     failReason: reason,
   };
 
+  // 多看板：新建的卡进当前看板；编辑不改归属（跨看板移动由 issue_update boardId 完成）
+  if (!state.editingId && state.currentBoardId != null) payload.boardId = state.currentBoardId;
+
   // 乐观锁：把「打开表单时看到的版本号」带回服务端，被别人改过就拒绝提交
   if (editing && editing.version != null) payload.expectedVersion = editing.version;
 
@@ -206,6 +212,20 @@ export function askDeleteMany(ids) {
   $('#confirmText').innerHTML =
     `确定要删除选中的 <strong>${ids.length}</strong> 个任务吗？<br>该操作不可撤销，` +
     `任务的标签与状态变更记录将一并删除。`;
+  openModal(modalConfirm);
+  setTimeout(() => $('#confirmOk').focus(), 60);
+}
+
+/**
+ * 删除看板二次确认：同样复用确认弹窗，靠 pendingDelete 上的 board 字段区分。
+ * 任务级联删除由服务端保证；至少保留一个看板的护栏在 MCP 内。
+ * @param {any} board
+ */
+export function askDeleteBoard(board) {
+  pendingDelete = { board };
+  $('#confirmText').innerHTML =
+    `确定要删除看板「<strong>${esc(board.name)}</strong>」吗？<br>看板内的 ` +
+    `<strong>${board.issueCount ?? 0}</strong> 个任务连同标签、评论与变更记录将一并删除，该操作不可撤销。`;
   openModal(modalConfirm);
   setTimeout(() => $('#confirmOk').focus(), 60);
 }
@@ -254,6 +274,7 @@ export function cancelPendingReason() {
 
 export function initModals(callbacks = {}) {
   if (callbacks.onChanged) onChanged = callbacks.onChanged;
+  if (callbacks.onBoardDeleted) onBoardDeleted = callbacks.onBoardDeleted;
 
   populateStatusOptions();
   populateTypeOptions();
@@ -278,8 +299,12 @@ export function initModals(callbacks = {}) {
     pendingDelete = null;
     closeModals();
     try {
-      // 批量删除与单条删除共用确认弹窗，靠 ids 是否数组区分
-      if (Array.isArray(target.ids)) {
+      // 三种删除共用确认弹窗：board 看板 / ids 批量 / 单条任务
+      if (target.board) {
+        const data = await api.deleteBoard(target.board.id);
+        toast(`看板「${data.name || target.board.name}」及其任务已删除`, 'success');
+        await onBoardDeleted(target.board);
+      } else if (Array.isArray(target.ids)) {
         const res = await api.batchRemove(target.ids);
         const skipped = res?.failed?.length ?? 0;
         toast(

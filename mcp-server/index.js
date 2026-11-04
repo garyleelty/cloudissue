@@ -67,6 +67,8 @@ function shapeIssue(i, tags, logs, commentCount = 0) {
     tags,
     dueDate: toDateStr(i.due_date),
     status: i.status,
+    boardId: Number(i.board_id ?? 1),
+    boardName: i.board_name || '',
     position: i.position,
     version: Number(i.version ?? 1),
     commentCount,
@@ -76,9 +78,18 @@ function shapeIssue(i, tags, logs, commentCount = 0) {
   };
 }
 
-/** 读取整块看板数据（任务 + 标签 + 状态变更记录 + 评论计数） */
-async function fetchBoard(conn = pool) {
-  const [issues] = await conn.query('SELECT * FROM issues ORDER BY position ASC, id ASC');
+/** issues 与 boards 的联查片段：boardName 供多看板视图直接展示 */
+const ISSUE_SELECT = `
+  SELECT i.*, b.name AS board_name
+    FROM issues i
+    LEFT JOIN boards b ON b.id = i.board_id
+`;
+
+/** 读取看板数据（任务 + 标签 + 状态变更记录 + 评论计数）；boardId 给定时只取该看板 */
+async function fetchBoard(boardId = null, conn = pool) {
+  const [issues] = boardId
+    ? await conn.query(`${ISSUE_SELECT} WHERE i.board_id = ? ORDER BY i.position ASC, i.id ASC`, [boardId])
+    : await conn.query(`${ISSUE_SELECT} ORDER BY i.position ASC, i.id ASC`);
   if (!issues.length) return [];
 
   const ids = issues.map((i) => i.id);
@@ -124,6 +135,34 @@ async function fetchBoard(conn = pool) {
   );
 }
 
+/** boards 行 → 对外 JSON（issueCount 供切换器展示规模） */
+function shapeBoard(b) {
+  return {
+    id: Number(b.id),
+    name: b.name,
+    description: b.description || '',
+    issueCount: Number(b.issue_count ?? 0),
+    createdAt: toIsoStr(b.created_at),
+  };
+}
+
+/** 全部看板（按 position 排序，附带每个看板的任务数） */
+async function fetchBoards(conn = pool) {
+  const [rows] = await conn.query(
+    `SELECT b.*, COUNT(i.id) AS issue_count
+       FROM boards b LEFT JOIN issues i ON i.board_id = b.id
+      GROUP BY b.id
+      ORDER BY b.position ASC, b.id ASC`,
+  );
+  return rows.map(shapeBoard);
+}
+
+/** 校验看板存在；不存在抛业务错（issue_create/issue_update 的 boardId 入口共用） */
+async function assertBoardExists(boardId, conn = pool) {
+  const [[row]] = await conn.query('SELECT id FROM boards WHERE id = ?', [boardId]);
+  if (!row) throw bizError('目标看板不存在');
+}
+
 /** 按 id 读取评论（详情抽屉 / issue_get 用） */
 async function fetchComments(issueId, conn = pool) {
   const [rows] = await conn.query(
@@ -154,7 +193,7 @@ async function commentCountOf(issueId, conn = pool) {
  * create/update/move 的返回值用：此前是「全表拉回再 find」，随数据量线性变慢。
  */
 async function fetchIssueById(id, conn = pool) {
-  const [[issue]] = await conn.query('SELECT * FROM issues WHERE id = ?', [id]);
+  const [[issue]] = await conn.query(`${ISSUE_SELECT} WHERE i.id = ?`, [id]);
   if (!issue) return null;
   const [tagRows] = await conn.query('SELECT tag FROM issue_tags WHERE issue_id = ? ORDER BY tag ASC', [id]);
   const [logRows] = await conn.query(
@@ -404,9 +443,14 @@ export function createBoardServer() {
     },
   );
 
-  // 3) 读取整块看板
-  server.registerTool('issue_list', { description: '返回全部任务（含标签与状态变更记录）' }, async () =>
-    ok({ issues: await fetchBoard() }),
+  // 3) 读取整块看板（boardId 给定时只返回该看板，多看板视图按需拉取）
+  server.registerTool(
+    'issue_list',
+    {
+      description: '返回任务列表（含标签与状态变更记录）；传 boardId 只取该看板，不传返回全部看板的任务',
+      inputSchema: { boardId: z.number().int().positive().optional().describe('只返回该看板的任务') },
+    },
+    async (args) => ok({ issues: await fetchBoard(args?.boardId ?? null) }),
   );
 
   // 3.5) 读取单条 issue（含评论全文——详情视图用）
@@ -441,6 +485,7 @@ export function createBoardServer() {
           .default([]),
         dueDate: z.string().nullable().optional(),
         status: StatusEnum.optional().default('backlog'),
+        boardId: z.number().int().positive().optional().default(1).describe('归属看板；缺省为默认看板'),
         failReason: z.string().optional().default(''),
         actor: z.string().max(64).optional().default(''),
       },
@@ -459,14 +504,17 @@ export function createBoardServer() {
         assigneeName = u.display_name || u.username;
       }
 
+      const boardId = args.boardId ?? 1;
+      await assertBoardExists(boardId);
+
       const issue = await withTransaction(async (conn) => {
         const [[{ next }]] = await conn.query(
-          'SELECT COALESCE(MAX(position) + 1, 0) AS next FROM issues WHERE status = ?',
-          [status],
+          'SELECT COALESCE(MAX(position) + 1, 0) AS next FROM issues WHERE status = ? AND board_id = ?',
+          [status, boardId],
         );
         const [res] = await conn.query(
-          `INSERT INTO issues (title, type, description, priority, assignee, assignee_id, due_date, status, position)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO issues (title, type, description, priority, assignee, assignee_id, due_date, status, board_id, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             args.title.trim(),
             args.type || 'task',
@@ -476,6 +524,7 @@ export function createBoardServer() {
             args.assigneeId ?? null,
             toDateStr(args.dueDate) || null,
             status,
+            boardId,
             Number(next),
           ],
         );
@@ -492,7 +541,7 @@ export function createBoardServer() {
         return id;
       });
 
-      const [rows] = await pool.query('SELECT * FROM issues WHERE id = ?', [issue]);
+      const [rows] = await pool.query(`${ISSUE_SELECT} WHERE i.id = ?`, [issue]);
       return ok({ created: true, id: issue, issue: (await fetchIssueById(issue)) ?? rows[0] });
     },
   );
@@ -513,6 +562,7 @@ export function createBoardServer() {
         tags: z.union([z.array(z.string()), z.string()]).optional(),
         dueDate: z.string().nullable().optional(),
         status: StatusEnum.optional(),
+        boardId: z.number().int().positive().optional().describe('把任务移动到另一个看板'),
         failReason: z.string().optional(),
         expectedVersion: ExpectedVersion,
         actor: z.string().max(64).optional().default(''),
@@ -554,6 +604,17 @@ export function createBoardServer() {
           if (!reason) throw bizError('变更为「失败」状态必须填写失败原因');
         }
 
+        // 跨看板移动：落到目标看板同状态列的列尾；position 是「看板 × 状态」内的相对序
+        let boardPatch = { board_id: row.board_id, position: row.position };
+        if (args.boardId !== undefined && args.boardId !== Number(row.board_id)) {
+          await assertBoardExists(args.boardId, conn);
+          const [[{ next }]] = await conn.query(
+            'SELECT COALESCE(MAX(position) + 1, 0) AS next FROM issues WHERE board_id = ? AND status = ?',
+            [args.boardId, nextStatus],
+          );
+          boardPatch = { board_id: args.boardId, position: Number(next) };
+        }
+
         const patch = {
           title: args.title !== undefined ? args.title.trim() : row.title,
           type: args.type ?? row.type ?? 'task',
@@ -563,11 +624,13 @@ export function createBoardServer() {
           assignee_id: assigneePatch.assignee_id !== undefined ? assigneePatch.assignee_id : row.assignee_id,
           due_date: args.dueDate !== undefined ? toDateStr(args.dueDate) : row.due_date,
           status: nextStatus,
+          board_id: boardPatch.board_id,
+          position: boardPatch.position,
         };
 
         await conn.query(
           `UPDATE issues
-              SET title = ?, type = ?, description = ?, priority = ?, assignee = ?, assignee_id = ?, due_date = ?, status = ?,
+              SET title = ?, type = ?, description = ?, priority = ?, assignee = ?, assignee_id = ?, due_date = ?, status = ?, board_id = ?, position = ?,
                   version = version + 1
             WHERE id = ?`,
           [
@@ -579,6 +642,8 @@ export function createBoardServer() {
             patch.assignee_id,
             patch.due_date,
             patch.status,
+            patch.board_id,
+            patch.position,
             args.id,
           ],
         );
@@ -738,32 +803,31 @@ export function createBoardServer() {
     'issue_search',
     {
       description:
-        '按条件检索 issue：关键词（标题/描述/#编号）、状态、类型、负责人、优先级；返回过滤结果与 total。找特定 issue 优先用它，而不是 issue_list 拉全量。',
+        '按条件检索 issue：关键词（标题/描述/#编号）、状态、类型、负责人、优先级、看板；返回过滤结果与 total。找特定 issue 优先用它，而不是 issue_list 拉全量。',
       inputSchema: {
         keyword: z.string().max(255).optional().describe('标题/描述/#编号 关键词'),
         status: StatusEnum.optional(),
         type: z.enum(ISSUE_TYPES).optional(),
         assigneeId: z.number().int().positive().nullable().optional(),
         priority: PriorityEnum.optional(),
+        boardId: z.number().int().positive().optional().describe('只在该看板内检索'),
         limit: z.number().int().positive().max(200).optional().default(50),
         offset: z.number().int().nonnegative().optional().default(0),
       },
     },
     async (args) => {
-      let issues = await fetchBoard();
+      let issues = await fetchBoard(args?.boardId ?? null);
 
       if (args.keyword) {
         const kw = args.keyword.toLowerCase();
-        issues = issues.filter((i) =>
-          `#${i.id} ${i.title} ${i.description}`.toLowerCase().includes(kw),
-        );
+        issues = issues.filter((i) => `#${i.id} ${i.title} ${i.description}`.toLowerCase().includes(kw));
       }
       if (args.status) issues = issues.filter((i) => i.status === args.status);
       if (args.type) issues = issues.filter((i) => (i.type || 'task') === args.type);
       if (args.priority) issues = issues.filter((i) => i.priority === args.priority);
       if (args.assigneeId !== undefined) {
-        issues = issues.filter(
-          (i) => (args.assigneeId === null ? i.assigneeId == null : i.assigneeId === args.assigneeId),
+        issues = issues.filter((i) =>
+          args.assigneeId === null ? i.assigneeId == null : i.assigneeId === args.assigneeId,
         );
       }
 
@@ -824,11 +888,12 @@ export function createBoardServer() {
     'board_summary',
     {
       description:
-        '返回看板概览：各列任务数、逾期与今日到期的未完成任务、高优先级未完成任务、最近 5 条状态变更。理解看板现状请先调用它，再按需 issue_list。',
-      inputSchema: {},
+        '返回看板概览：全部看板清单、各列任务数、逾期与今日到期的未完成任务、高优先级未完成任务、最近 5 条状态变更。传 boardId 只统计该看板；理解看板现状请先调用它，再按需 issue_list。',
+      inputSchema: { boardId: z.number().int().positive().optional().describe('只统计该看板') },
     },
-    async () => {
-      const issues = await fetchBoard();
+    async (args) => {
+      const boards = await fetchBoards();
+      const issues = await fetchBoard(args?.boardId ?? null);
       const today = new Date().toISOString().slice(0, 10);
       const open = issues.filter((i) => i.status !== 'done' && i.status !== 'failed');
 
@@ -859,6 +924,7 @@ export function createBoardServer() {
         }));
 
       return ok({
+        boards,
         total: issues.length,
         byStatus,
         byType,
@@ -871,6 +937,65 @@ export function createBoardServer() {
         recentChanges: logs,
         generatedAt: new Date().toISOString(),
       });
+    },
+  );
+
+  // ------------------------------------------------------------------
+  // 多看板 workspace：看板本身也是数据，同一套 tools 暴露给人与 AI
+  // ------------------------------------------------------------------
+
+  // 7.6) 看板列表（切换器与 AI 发现看板的入口）
+  server.registerTool('board_list', { description: '返回全部看板（id/名称/说明/任务数）' }, async () =>
+    ok({ boards: await fetchBoards() }),
+  );
+
+  // 7.7) 新建看板
+  server.registerTool(
+    'board_create',
+    {
+      description: '新建一个看板（name 唯一）；新看板为空，用 issue_create 指定 boardId 往里建任务',
+      inputSchema: {
+        name: z.string().min(1, '看板名不能为空').max(64),
+        description: z.string().max(255).optional().default(''),
+        actor: z.string().max(64).optional().default(''),
+      },
+    },
+    async (args) => {
+      const name = args.name.trim();
+      if (!name) throw bizError('看板名不能为空');
+      try {
+        const [res] = await query('INSERT INTO boards (name, description) VALUES (?, ?)', [
+          name,
+          args.description || '',
+        ]);
+        const [[row]] = await pool.query('SELECT b.*, 0 AS issue_count FROM boards b WHERE b.id = ?', [
+          res.insertId,
+        ]);
+        return ok({ created: true, board: shapeBoard(row) });
+      } catch (err) {
+        if (err && err.code === 'ER_DUP_ENTRY') throw bizError('同名看板已存在');
+        throw err;
+      }
+    },
+  );
+
+  // 7.8) 删除看板（任务级联删除；最后一个看板受保护）
+  server.registerTool(
+    'board_delete',
+    {
+      description:
+        '删除一个看板，其下任务连同标签/评论/变更记录一并级联删除；至少保留一个看板，删除最后一个看板会被拒绝',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async (args) => {
+      const [[board]] = await query('SELECT id, name FROM boards WHERE id = ?', [args.id]);
+      if (!board) throw bizError('看板不存在或已被删除');
+
+      const [[{ total }]] = await query('SELECT COUNT(*) AS total FROM boards');
+      if (Number(total) <= 1) throw bizError('至少保留一个看板，不能删除最后一个看板');
+
+      await query('DELETE FROM boards WHERE id = ?', [args.id]);
+      return ok({ deleted: true, id: args.id, name: board.name });
     },
   );
 

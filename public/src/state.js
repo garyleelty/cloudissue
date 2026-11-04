@@ -7,6 +7,8 @@ import { STATUSES } from '../../shared/constants.js';
 /**
  * @typedef {Object} BoardState
  * @property {any[]} issues
+ * @property {{ id: number, name: string, description: string, issueCount: number }[]} boards  全部看板（多看板切换）
+ * @property {number | null} currentBoardId  当前看板；null 表示尚未初始化（登录后取首个）
  * @property {{ id: number, username: string, displayName: string }[]} users  全部用户（负责人选择/筛选用）
  * @property {{ id: number, username: string, displayName: string } | null} me  当前登录用户
  * @property {number | null} editingId
@@ -23,6 +25,8 @@ import { STATUSES } from '../../shared/constants.js';
 /** @type {BoardState} */
 export const state = {
   issues: [],
+  boards: [],
+  currentBoardId: null,
   users: [],
   me: null,
   editingId: null,

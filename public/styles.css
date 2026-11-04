@@ -440,6 +440,88 @@ textarea {
 }
 
 /* ==========================================================================
+   顶栏看板切换器（多看板 workspace）
+   ========================================================================== */
+.board-switch .drop-trigger {
+  gap: 7px;
+  font-weight: 600;
+  color: var(--text);
+}
+.board-switch .drop-label {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-switch .drop-panel {
+  min-width: 250px;
+}
+
+/* 单选语义用 aria-selected：选中态与筛选项的 aria-checked 视觉一致 */
+.drop-opt.selected {
+  font-weight: 600;
+}
+.drop-opt.selected .drop-check {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+
+.board-opt-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-opt-count {
+  flex: none;
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-sunken);
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+.board-del {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  margin-left: 2px;
+  color: var(--text-4);
+  opacity: 0;
+  transition:
+    opacity 0.14s var(--ease),
+    color 0.14s var(--ease);
+}
+.drop-opt:hover .board-del {
+  opacity: 1;
+}
+.board-del:hover {
+  color: var(--red);
+}
+
+.board-create {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+  color: var(--blue);
+  font-weight: 600;
+}
+.board-create:hover {
+  background: var(--blue-soft);
+}
+.board-create-plus {
+  width: 15px;
+  flex: none;
+  text-align: center;
+  font-weight: 700;
+}
+
+/* ==========================================================================
    移动端列切换
    ========================================================================== */
 .col-tabs {
@@ -1193,6 +1275,13 @@ body:has(#batchBar:not([hidden])) .toast-root {
   }
   .topbar-inner {
     padding: 11px 16px;
+  }
+  .board-switch {
+    order: 10;
+    margin-left: auto;
+  }
+  .board-switch .drop-label {
+    max-width: 96px;
   }
   .filters-inner {
     padding: 11px 16px;

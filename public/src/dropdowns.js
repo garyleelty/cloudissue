@@ -85,9 +85,13 @@ export function closeAllDropdowns() {
 /** 绑定下拉的展开与勾选行为；筛选变化后通过 notify() 通知视图刷新 */
 export function bindDropdowns() {
   document.querySelectorAll('.dropdown').forEach((dd) => {
+    // 只装配筛选下拉：没有 data-filter（如看板切换器）或未知维度的跳过，
+    // 否则会和该组件自己的事件处理器打架，甚至往 state.filters 里写坏维度
+    const kind = dd.dataset.filter;
+    if (!kind || typeof state.filters[kind]?.has !== 'function') return;
+
     const trigger = dd.querySelector('.drop-trigger');
     const panel = dd.querySelector('.drop-panel');
-    const kind = dd.dataset.filter;
 
     trigger.addEventListener('click', (e) => {
       e.stopPropagation();

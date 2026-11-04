@@ -47,6 +47,8 @@ function mkIssue(id, over = {}) {
     tags: [],
     dueDate: ymd(5),
     status: 'backlog',
+    boardId: 1,
+    boardName: '默认看板',
     position: id,
     version: 1,
     createdAt: iso(id * 1000),
@@ -73,6 +75,12 @@ const FIXTURE = [
   mkIssue(5, { priority: 'low', assignee: '陈默', tags: ['工具'], status: 'backlog' }),
 ];
 
+/** 看板 fixture：可变的，供新建/删除看板用例模拟服务端状态 */
+const BOARDS = [
+  { id: 1, name: '默认看板', description: '开箱即用的第一个看板', issueCount: 5, createdAt: iso(90000) },
+  { id: 2, name: '产品规划', description: '长期路线图', issueCount: 0, createdAt: iso(80000) },
+];
+
 // ---------------------------------------------------------------
 // 启动 jsdom
 // ---------------------------------------------------------------
@@ -89,7 +97,7 @@ globalThis.KeyboardEvent = window.KeyboardEvent;
 globalThis.CustomEvent = window.CustomEvent;
 globalThis.DataTransfer = window.DataTransfer;
 
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
   if (u.includes('/api/health')) {
     return { ok: true, status: 200, json: async () => ({ ok: true, connected: true, db: 'issue_board' }) };
@@ -113,6 +121,28 @@ globalThis.fetch = async (url) => {
       }),
     };
   }
+  if (u.includes('/api/boards') && !u.includes('/api/issues')) {
+    // 看板删除走 /api/boards/:id，先按服务端语义处理再返回
+    if (opts?.method === 'DELETE') {
+      const id = Number(u.match(/\/api\/boards\/(\d+)/)?.[1]);
+      const idx = BOARDS.findIndex((b) => b.id === id);
+      const removed = BOARDS.splice(idx, 1)[0];
+      return { ok: true, status: 200, json: async () => ({ deleted: true, id, name: removed.name }) };
+    }
+    if (opts?.method === 'POST') {
+      const body = JSON.parse(opts.body);
+      const board = {
+        id: Math.max(...BOARDS.map((b) => b.id)) + 1,
+        name: body.name,
+        description: body.description || '',
+        issueCount: 0,
+        createdAt: new Date().toISOString(),
+      };
+      BOARDS.push(board);
+      return { ok: true, status: 201, json: async () => ({ created: true, board }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ boards: BOARDS }) };
+  }
   // issue 详情（抽屉用）：从 FIXTURE 取，附两条评论
   const detailMatch = u.match(/\/api\/issues\/(\d+)$/);
   if (detailMatch) {
@@ -129,7 +159,10 @@ globalThis.fetch = async (url) => {
     };
   }
   if (u.includes('/api/issues')) {
-    return { ok: true, status: 200, json: async () => ({ issues: FIXTURE }) };
+    // 多看板：?boardId= 只返回该看板的任务（与服务端语义一致）
+    const bid = Number(u.match(/boardId=(\d+)/)?.[1]);
+    const rows = bid ? FIXTURE.filter((i) => i.boardId === bid) : FIXTURE;
+    return { ok: true, status: 200, json: async () => ({ issues: rows }) };
   }
   throw new Error('unexpected url ' + url);
 };
@@ -591,21 +624,40 @@ console.log('\n--- 列表视图 ---');
 {
   $('#viewList').click();
   await wait(80);
-  check('切换到列表视图', document.querySelector('#board').hidden === true && !document.querySelector('#listView').hidden);
-  check('列表渲染 5 行', document.querySelectorAll('.issue-table tbody tr').length === 5, String(document.querySelectorAll('.issue-table tbody tr').length));
+  check(
+    '切换到列表视图',
+    document.querySelector('#board').hidden === true && !document.querySelector('#listView').hidden,
+  );
+  check(
+    '列表渲染 5 行',
+    document.querySelectorAll('.issue-table tbody tr').length === 5,
+    String(document.querySelectorAll('.issue-table tbody tr').length),
+  );
   check('卡片编号列存在', document.querySelector('.issue-table tbody .td-id .cell-no')?.textContent === '#1');
 
   // 点「优先级」排序：fixture 1 条 high / 2 条 medium / 2 条 low
   document.querySelector('th[data-sort="priority"]').click();
   await wait(80);
-  const prios = [...document.querySelectorAll('.issue-table tbody .td-priority .chip')].map((c) => c.textContent.trim());
-  check('按优先级升序排列', JSON.stringify(prios) === JSON.stringify(['高', '高', '中', '低', '低']), JSON.stringify(prios));
+  const prios = [...document.querySelectorAll('.issue-table tbody .td-priority .chip')].map((c) =>
+    c.textContent.trim(),
+  );
+  check(
+    '按优先级升序排列',
+    JSON.stringify(prios) === JSON.stringify(['高', '高', '中', '低', '低']),
+    JSON.stringify(prios),
+  );
 
   // 同列再点反转
   document.querySelector('th[data-sort="priority"]').click();
   await wait(80);
-  const priosDesc = [...document.querySelectorAll('.issue-table tbody .td-priority .chip')].map((c) => c.textContent.trim());
-  check('同列再点反向排列', JSON.stringify(priosDesc) === JSON.stringify(['低', '低', '中', '高', '高']), JSON.stringify(priosDesc));
+  const priosDesc = [...document.querySelectorAll('.issue-table tbody .td-priority .chip')].map((c) =>
+    c.textContent.trim(),
+  );
+  check(
+    '同列再点反向排列',
+    JSON.stringify(priosDesc) === JSON.stringify(['低', '低', '中', '高', '高']),
+    JSON.stringify(priosDesc),
+  );
 
   // 列表点标题打开抽屉
   document.querySelector('.issue-table tbody .card-open').click();
@@ -618,14 +670,169 @@ console.log('\n--- 列表视图 ---');
   s.filters.keyword = '任务2';
   notify();
   await wait(80);
-  check('列表视图筛选生效（关键词命中 1 行）', document.querySelectorAll('.issue-table tbody tr').length === 1, String(document.querySelectorAll('.issue-table tbody tr').length));
+  check(
+    '列表视图筛选生效（关键词命中 1 行）',
+    document.querySelectorAll('.issue-table tbody tr').length === 1,
+    String(document.querySelectorAll('.issue-table tbody tr').length),
+  );
   s.filters.keyword = '';
   notify();
 
   // 切回看板
   $('#viewBoard').click();
   await wait(80);
-  check('切回看板视图', document.querySelector('#board').hidden === false && document.querySelector('#listView').hidden === true);
+  check(
+    '切回看板视图',
+    document.querySelector('#board').hidden === false && document.querySelector('#listView').hidden === true,
+  );
+}
+
+// ------------------------------------------------------------------
+// 多看板 workspace：切换 / 新建 / 删除 / 跨标签跟随
+// ------------------------------------------------------------------
+console.log('\n--- 多看板 workspace ---');
+{
+  // 记录 issues 请求的 URL，验证 boardId 透传
+  const baseFetch = globalThis.fetch;
+  const issueUrls = [];
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('/api/issues')) issueUrls.push(String(url));
+    return baseFetch(url, opts);
+  };
+  window.fetch = globalThis.fetch;
+
+  const boardSwitch = $('#boardSwitch');
+  const boardLabel = $('#boardLabel');
+  const panelBoard = $('#panelBoard');
+
+  check('登录后看板切换器可见', boardSwitch.hidden === false);
+  check('默认落在默认看板', boardLabel.textContent === '默认看板', boardLabel.textContent);
+
+  // 面板内容
+  boardSwitch.querySelector('.drop-trigger').click();
+  await wait(30);
+  check('点击触发器展开看板面板', panelBoard.classList.contains('open'));
+  const boardOpts = () => [...panelBoard.querySelectorAll('[data-board-id]')];
+  check('面板列出两块看板', boardOpts().length === 2, String(boardOpts().length));
+  check(
+    '看板选项带任务计数',
+    boardOpts()[0].querySelector('.board-opt-count')?.textContent === '5',
+    boardOpts()[0].textContent.trim(),
+  );
+  check('面板有「新建看板」入口', Boolean(panelBoard.querySelector('[data-board-create]')));
+  check(
+    '多于一块看板时每板都有删除入口',
+    panelBoard.querySelectorAll('[data-board-del]').length === 2,
+    String(panelBoard.querySelectorAll('[data-board-del]').length),
+  );
+
+  // 切换到「产品规划」（空看板）
+  boardOpts()
+    .find((o) => o.dataset.boardId === '2')
+    .click();
+  await wait(120);
+  check('切换后触发器文案更新', boardLabel.textContent === '产品规划', boardLabel.textContent);
+  check(
+    '看板切换带 boardId 拉取',
+    issueUrls.some((u) => u.includes('boardId=2')),
+    issueUrls.join(' | '),
+  );
+  check(
+    '空看板渲染出空列状态',
+    document.querySelectorAll('.col-empty').length === 5 && cardCount() === 0,
+    String(cardCount()),
+  );
+  check(
+    '当前看板 id 写入 localStorage',
+    window.localStorage.getItem('issue-board:boardId') === '2',
+    String(window.localStorage.getItem('issue-board:boardId')),
+  );
+
+  // 切回默认看板
+  boardSwitch.querySelector('.drop-trigger').click();
+  await wait(30);
+  boardOpts()
+    .find((o) => o.dataset.boardId === '1')
+    .click();
+  await wait(120);
+  check('切回后恢复 5 张卡片', cardCount() === 5, String(cardCount()));
+
+  // 新建看板：弹窗 → 创建成功 → 自动切换
+  boardSwitch.querySelector('.drop-trigger').click();
+  await wait(30);
+  panelBoard.querySelector('[data-board-create]').click();
+  await wait(30);
+  check('新建看板弹窗打开', $('#modalRoot').hidden === false && $('#modalBoard').hidden === false);
+  const boardForm = $('#boardForm');
+  boardForm.elements.namedItem('name').value = '新领域';
+  boardForm.querySelector('button[type="submit"]').click();
+  await wait(200);
+  check('创建后自动切换到新看板', boardLabel.textContent === '新领域', boardLabel.textContent);
+  check('创建后看板列表有 3 块', s.boards.length === 3, String(s.boards.length));
+  check('新看板任务为空', cardCount() === 0, String(cardCount()));
+
+  // 删除看板：二次确认 → 当前板被删时自动回落
+  boardSwitch.querySelector('.drop-trigger').click();
+  await wait(30);
+  panelBoard.querySelector('[data-board-del="3"]').click();
+  await wait(30);
+  check('删除看板先弹二次确认', $('#modalRoot').hidden === false && $('#modalConfirm').hidden === false);
+  check(
+    '确认文案说明级联删除',
+    /新领域/.test($('#confirmText').textContent) && /一并删除/.test($('#confirmText').textContent),
+    $('#confirmText').textContent,
+  );
+  $('#confirmOk').click();
+  await wait(200);
+  check('删除后看板列表回到 2 块', s.boards.length === 2, String(s.boards.length));
+  check('被删的是当前板时自动回落到第一块', boardLabel.textContent === '默认看板', boardLabel.textContent);
+  check('回落到默认看板后任务恢复 5 张', cardCount() === 5, String(cardCount()));
+
+  // 跨标签页跟随：storage 事件带看板 id
+  const ev2 = new window.Event('storage');
+  ev2.key = 'issue-board:boardId';
+  ev2.newValue = '2';
+  window.dispatchEvent(ev2);
+  await wait(120);
+  check('其他标签页切换看板时本页跟随', boardLabel.textContent === '产品规划', boardLabel.textContent);
+  const ev3 = new window.Event('storage');
+  ev3.key = 'issue-board:boardId';
+  ev3.newValue = '1';
+  window.dispatchEvent(ev3);
+  await wait(120);
+  check(
+    '跟随切回默认看板',
+    boardLabel.textContent === '默认看板' && cardCount() === 5,
+    boardLabel.textContent,
+  );
+
+  globalThis.fetch = baseFetch;
+  window.fetch = baseFetch;
+}
+
+// ------------------------------------------------------------------
+// toast 去重：相同文案不堆叠（轮询失败等场景会连续弹同一条）
+// ------------------------------------------------------------------
+console.log('\n--- toast 去重 ---');
+{
+  const toastMod = await import('../public/src/toast.js');
+  // 清掉此前用例残留且仍在存活期的 toast，保证计数断言确定性
+  document.querySelector('#toastRoot').innerHTML = '';
+  toastMod.toast('加载失败：请求过于频繁', 'error');
+  toastMod.toast('加载失败：请求过于频繁', 'error');
+  toastMod.toast('加载失败：请求过于频繁', 'error');
+  check(
+    '相同文案只保留一条',
+    document.querySelectorAll('#toastRoot .toast').length === 1,
+    String(document.querySelectorAll('#toastRoot .toast').length),
+  );
+  toastMod.toast('另一条提示');
+  check(
+    '不同文案正常并存',
+    document.querySelectorAll('#toastRoot .toast').length === 2,
+    String(document.querySelectorAll('#toastRoot .toast').length),
+  );
+  check('相同文案保留的是新类型', document.querySelector('#toastRoot .toast').dataset.type === 'error');
 }
 
 // ------------------------------------------------------------------

@@ -107,6 +107,7 @@ app.use('/mcp', apiLimiter, authByToken, mcpHttpRouter);
 app.use('/api/issues', authRequired);
 app.use('/api/users', authRequired);
 app.use('/api/comments', authRequired);
+app.use('/api/boards', authRequired);
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
 
@@ -119,11 +120,62 @@ app.get(
   }),
 );
 
-/** 获取整块看板 */
+/** boardId 查询参数归一化：缺省/非法返回 null（null = 全部看板） */
+function boardIdOf(req) {
+  const raw = req.query.boardId;
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/** 获取任务列表：?boardId= 只取该看板，缺省返回全部看板的任务 */
 app.get(
   '/api/issues',
+  asyncHandler(async (req, res) => {
+    const boardId = boardIdOf(req);
+    if (boardId === undefined) return res.status(400).json({ error: '非法的看板 ID' });
+    const data = await callTool('issue_list', boardId ? { boardId } : {});
+    res.json(data);
+  }),
+);
+
+/** 看板列表（多看板切换器与 AI 发现入口） */
+app.get(
+  '/api/boards',
   asyncHandler(async (_req, res) => {
-    const data = await callTool('issue_list');
+    const data = await callTool('board_list');
+    res.json(data);
+  }),
+);
+
+/** 新建看板 */
+app.post(
+  '/api/boards',
+  asyncHandler(async (req, res) => {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: '看板名不能为空' });
+    if (name.length > 64) return res.status(400).json({ error: '看板名最长 64 字' });
+    const description = String(req.body?.description || '').trim();
+    if (description.length > 255) return res.status(400).json({ error: '看板说明最长 255 字' });
+
+    const data = await callTool('board_create', {
+      name,
+      description,
+      actor: req.user.username,
+    });
+    res.status(201).json(data);
+  }),
+);
+
+/** 删除看板：其下任务级联删除，最后一个看板受保护（校验在 MCP 内） */
+app.delete(
+  '/api/boards/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: '非法的看板 ID' });
+    }
+    const data = await callTool('board_delete', { id });
     res.json(data);
   }),
 );

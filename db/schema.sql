@@ -59,6 +59,39 @@ EXECUTE ci_stmt;
 DEALLOCATE PREPARE ci_stmt;
 
 -- ------------------------------------------------------------
+-- 1.2 看板表（多看板 workspace；任务归属某个看板）
+--     首个看板固定为 id=1 的「默认看板」，issues.board_id 的默认值指向它
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `boards` (
+  `id`          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name`        VARCHAR(64)     NOT NULL                COMMENT '看板名，唯一',
+  `description` VARCHAR(255)    NOT NULL DEFAULT ''     COMMENT '看板说明',
+  `position`    INT             NOT NULL DEFAULT 0      COMMENT '排序位，越小越靠前',
+  `created_at`  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_boards_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='看板';
+
+-- 幂等种子：保证至少存在一个看板（历史库与新库都补上 id=1 的默认看板）
+INSERT INTO `boards` (`name`, `description`, `position`)
+SELECT '默认看板', '开箱即用的第一个看板', 0 FROM DUAL
+WHERE NOT EXISTS (SELECT 1 FROM `boards`);
+
+-- 幂等补列：任务归属看板（历史任务全部归入默认看板）。
+-- 必须在 boards 建表并写入默认行之后执行：外键校验需要 id=1 存在。
+SET @ci_ddl := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'issues'
+       AND COLUMN_NAME = 'board_id') = 0,
+  'ALTER TABLE `issues` ADD COLUMN `board_id` BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT ''归属看板 id'' AFTER `status`, ADD KEY `idx_issues_board_status_pos` (`board_id`, `status`, `position`), ADD CONSTRAINT `fk_issues_board` FOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON DELETE CASCADE',
+  'DO 0'
+);
+PREPARE ci_stmt FROM @ci_ddl;
+EXECUTE ci_stmt;
+DEALLOCATE PREPARE ci_stmt;
+
+-- ------------------------------------------------------------
 -- 1.5 用户表（认证身份；看板为共享模式，任务不挂归属）
 --     token_version：密码修改时 +1，使所有旧 JWT 立即失效
 -- ------------------------------------------------------------

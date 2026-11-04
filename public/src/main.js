@@ -7,7 +7,6 @@ import {
   notify,
   resetFilters,
   clearSelection,
-  pruneSelection,
   selectedIds,
   setSelected,
   toggleSelected,
@@ -26,10 +25,12 @@ import {
   populateAssigneeOptions,
   askDelete,
   askDeleteMany,
+  askDeleteBoard,
   askFailureReason,
   cancelPendingReason,
   hasPendingReason,
 } from './modals.js';
+import { initBoards, loadBoards, switchBoard, hasBoard, syncBoardAfterDataChange } from './boards.js';
 import {
   initDrawer,
   bindDrawer,
@@ -45,13 +46,15 @@ const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
 const colTabs = $('#colTabs');
 
-/** 拉取整块看板并广播刷新 */
+/** 拉取当前看板并广播刷新 */
 async function load() {
   try {
-    const data = await api.list();
+    // 未选定看板（登录后看板列表还没回来）时不发请求，等 loadBoards 后再拉
+    if (!hasBoard()) return;
+    const data = await api.list(state.currentBoardId);
     state.issues = data.issues ?? [];
     // 勾选里可能残留已被别处删掉的卡片，重新拉取后顺手清掉
-    pruneSelection(new Set(state.issues.map((i) => i.id)));
+    syncBoardAfterDataChange();
     syncDropdowns();
     notify();
     refreshDrawer();
@@ -112,7 +115,10 @@ let authMode = 'login';
 function showAuth() {
   state.me = null;
   state.users = [];
+  state.issues = [];
+  state.currentBoardId = null;
   closeDrawer();
+  $('#boardSwitch').hidden = true;
   authView.hidden = false;
   $('#userChip').hidden = true;
   $('#btnLogout').hidden = true;
@@ -129,7 +135,11 @@ function showBoard(user) {
   chip.title = `@${user.username}`;
   chip.hidden = false;
   $('#btnLogout').hidden = false;
-  load();
+  // 先看板列表、后任务：load 依赖 currentBoardId，顺序不能反
+  loadBoards().then((ok) => {
+    if (ok) load();
+    else notify(); // 没有任何看板：渲染空看板
+  });
   loadUsers();
 }
 
@@ -392,11 +402,17 @@ async function init() {
 
   render.buildSkeleton();
   initDnd({ onChanged: load });
-  initModals({ onChanged: load });
-  initCrossTabSync(load);
+  initModals({ onChanged: load, onBoardDeleted: reloadBoardsAfterDelete });
+  initCrossTabSync(load, followCrossTabBoard);
   initDrawer();
   bindDrawer({ onEdit: (issue) => openForm(issue) });
   initListView();
+  initBoards({
+    onBoardChanged: load,
+    askDeleteBoard,
+    closeDrawer,
+    resetListPage: resetListPage,
+  });
   bindDropdowns();
   bindGlobalEvents();
   bindBatchBar();
@@ -421,6 +437,24 @@ async function init() {
     .catch(() => null);
   if (me) showBoard(me);
   else showAuth();
+}
+
+/** 删除看板后的收尾：重载看板列表（loadBoards 会自动落到下一个可用看板）并拉任务 */
+async function reloadBoardsAfterDelete() {
+  const ok = await loadBoards();
+  if (ok) await load();
+  else {
+    state.issues = [];
+    notify();
+  }
+}
+
+/** 其他标签页切换了看板：本页跟随（switchBoard 内部会去重并重新拉取） */
+function followCrossTabBoard(id) {
+  if (!state.me) return; // 未登录时忽略
+  if (id == null) return;
+  if (!state.boards.some((b) => b.id === id)) return; // 未知看板：等下次 loadBoards 校正
+  switchBoard(id);
 }
 
 init();
