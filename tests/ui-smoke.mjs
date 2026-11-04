@@ -38,9 +38,12 @@ function mkIssue(id, over = {}) {
   return {
     id,
     title: `任务${id}`,
+    type: 'task',
     description: `描述${id}`,
     priority: 'medium',
     assignee: '周野',
+    assigneeId: null,
+    commentCount: 0,
     tags: [],
     dueDate: ymd(5),
     status: 'backlog',
@@ -82,6 +85,7 @@ globalThis.document = window.document;
 globalThis.HTMLElement = window.HTMLElement;
 globalThis.Node = window.Node;
 globalThis.Event = window.Event;
+globalThis.KeyboardEvent = window.KeyboardEvent;
 globalThis.CustomEvent = window.CustomEvent;
 globalThis.DataTransfer = window.DataTransfer;
 
@@ -95,6 +99,33 @@ globalThis.fetch = async (url) => {
       ok: true,
       status: 200,
       json: async () => ({ user: { id: 1, username: 'tester', displayName: '测试用户' } }),
+    };
+  }
+  if (u.includes('/api/users')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        users: [
+          { id: 1, username: 'tester', displayName: '测试用户' },
+          { id: 2, username: 'zhouye', displayName: '周野' },
+        ],
+      }),
+    };
+  }
+  // issue 详情（抽屉用）：从 FIXTURE 取，附两条评论
+  const detailMatch = u.match(/\/api\/issues\/(\d+)$/);
+  if (detailMatch) {
+    const issue = FIXTURE.find((i) => i.id === Number(detailMatch[1]));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        issue,
+        comments: [
+          { id: 1, authorId: 2, authorName: '周野', body: '来自 mock 的评论', createdAt: iso(1000) },
+        ],
+      }),
     };
   }
   if (u.includes('/api/issues')) {
@@ -476,6 +507,81 @@ console.log('\n--- 14. 批量选择与操作条 ---');
   $('#batchCancel').click();
   await wait(20);
   check('取消选择清空勾选', s.selection.size === 0, String(s.selection.size));
+}
+
+// ------------------------------------------------------------------
+// issue board 核心能力：编号 / 类型 chip / 详情抽屉 / 「我的」筛选
+// ------------------------------------------------------------------
+console.log('\n--- issue board 核心能力 ---');
+{
+  const firstCard = document.querySelector('.column[data-status="in_progress"] .card');
+
+  // 卡片编号与类型 chip
+  check(
+    '卡片标题带 #编号',
+    firstCard?.querySelector('.card-no')?.textContent === '#1',
+    firstCard?.querySelector('.card-no')?.textContent,
+  );
+  const typeChip = firstCard?.querySelector('.chip.type');
+  check(
+    '卡片渲染类型 chip',
+    Boolean(typeChip) && typeChip.textContent.includes('任务'),
+    typeChip?.textContent.trim(),
+  );
+  check(
+    '类型 chip 样式类跟随类型',
+    mkIssue(1).type === 'task' && typeChip.classList.contains('type-task'),
+    typeChip?.className,
+  );
+
+  // 点编号/标题打开详情抽屉（mock 返回 issue + 评论）
+  firstCard.querySelector('.card-open').click();
+  await wait(150);
+  check('点击卡片打开详情抽屉', document.querySelector('#drawerRoot').hidden === false);
+  check(
+    '抽屉显示 #编号与标题',
+    document.querySelector('.drawer-no')?.textContent === '#1' &&
+      document.querySelector('#drawerTitle')?.textContent === '任务1',
+    document.querySelector('#drawerTitle')?.textContent,
+  );
+  check(
+    '抽屉渲染 mock 评论',
+    document.querySelectorAll('.comment').length === 1 &&
+      document.querySelector('.comment-body')?.textContent === '来自 mock 的评论',
+    String(document.querySelectorAll('.comment').length),
+  );
+  check(
+    '他人评论不显示删除按钮',
+    Boolean(document.querySelector('.comment')) && !document.querySelector('.comment .comment-del'),
+  );
+
+  // Esc 关闭抽屉
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(50);
+  check('Esc 关闭详情抽屉', document.querySelector('#drawerRoot').hidden === true);
+
+  // 「我的」按钮：按当前登录用户 id 过滤负责人
+  const mineBtn = $('#btnMine');
+  mineBtn.click();
+  await wait(50);
+  check(
+    '「我的」筛选按登录用户 id 过滤',
+    s.filters.assignee.has('1') && s.filters.assignee.size === 1,
+    [...s.filters.assignee].join(','),
+  );
+  check('「我的」按钮激活态', mineBtn.getAttribute('aria-pressed') === 'true');
+  check(
+    'fixture 无指派给 tester 的卡，列表为空',
+    document.querySelectorAll('.card').length === 0,
+    String(document.querySelectorAll('.card').length),
+  );
+  mineBtn.click();
+  await wait(50);
+  check(
+    '再次点击「我的」取消过滤',
+    s.filters.assignee.size === 0 && document.querySelectorAll('.card').length === 5,
+    String(document.querySelectorAll('.card').length),
+  );
 }
 
 // ------------------------------------------------------------------

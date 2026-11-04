@@ -11,6 +11,8 @@ import { toast } from './toast.js';
 import {
   STATUSES,
   STATUS_LABELS,
+  ISSUE_TYPES,
+  ISSUE_TYPE_LABELS,
   FAIL_STATUS,
   MSG_MOVE_CANCELLED_NO_REASON,
 } from '../../shared/constants.js';
@@ -63,6 +65,29 @@ export function populateStatusOptions() {
   );
 }
 
+/** 填充 issue 类型下拉 */
+export function populateTypeOptions() {
+  const select = field('type');
+  if (!select) return;
+  select.innerHTML = ISSUE_TYPES.map(
+    (t) =>
+      `<option value="${esc(t)}">${ISSUE_TYPE_LABELS[t].icon} ${esc(ISSUE_TYPE_LABELS[t].label)}</option>`,
+  ).join('');
+}
+
+/** 填充负责人下拉：全部用户 + 「未指派」；历史文本负责人没有对应用户，不进列表 */
+export function populateAssigneeOptions() {
+  const select = field('assigneeId');
+  if (!select) return;
+  const opts = [`<option value="">未指派</option>`];
+  for (const u of state.users) {
+    opts.push(
+      `<option value="${u.id}">${esc(u.displayName || u.username)}${u.displayName ? '' : ' @' + esc(u.username)}</option>`,
+    );
+  }
+  select.innerHTML = opts.join('');
+}
+
 /**
  * 打开新建/编辑表单
  * @param {any | null} issue 传 null 表示新建
@@ -74,9 +99,11 @@ export function openForm(issue = null, presetStatus = null) {
   showFormError('');
 
   field('title').value = issue?.title ?? '';
+  field('type').value = issue?.type ?? 'task';
   field('description').value = issue?.description ?? '';
   field('priority').value = issue?.priority ?? 'medium';
-  field('assignee').value = issue?.assignee ?? '';
+  // 历史卡片可能只有文本负责人（无 assigneeId）：列表里没有对应项时回退为「未指派」
+  field('assigneeId').value = issue?.assigneeId != null ? String(issue.assigneeId) : '';
   field('status').value = issue?.status ?? presetStatus ?? 'backlog';
   field('dueDate').value = issue?.dueDate ?? '';
   field('tags').value = (issue?.tags ?? []).join(', ');
@@ -128,9 +155,10 @@ async function submitForm(e) {
 
   const payload = {
     title,
+    type: field('type').value,
     description: field('description').value.trim(),
     priority: field('priority').value,
-    assignee: field('assignee').value.trim(),
+    assigneeId: field('assigneeId').value ? Number(field('assigneeId').value) : null,
     tags: field('tags').value,
     dueDate: field('dueDate').value || null,
     status: field('status').value,
@@ -228,6 +256,8 @@ export function initModals(callbacks = {}) {
   if (callbacks.onChanged) onChanged = callbacks.onChanged;
 
   populateStatusOptions();
+  populateTypeOptions();
+  populateAssigneeOptions();
 
   issueForm.addEventListener('submit', submitForm);
 

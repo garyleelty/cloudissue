@@ -9,7 +9,7 @@
 import { state } from './state.js';
 import { filteredIssues, hasActiveFilters } from './filters.js';
 import { esc, fmtDateTime, dueInfo } from './utils.js';
-import { STATUSES, STATUS_LABELS, PRIORITY_LABELS } from '../../shared/constants.js';
+import { STATUSES, STATUS_LABELS, PRIORITY_LABELS, ISSUE_TYPE_LABELS } from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
@@ -33,13 +33,16 @@ function cardSignature(issue) {
   return JSON.stringify([
     state.selection.has(issue.id),
     issue.title,
+    issue.type,
     issue.description,
     issue.priority,
     issue.assignee,
+    issue.assigneeId,
     issue.dueDate,
     issue.status,
     issue.tags,
     issue.logs.length,
+    issue.commentCount,
     state.expanded.has(issue.id),
   ]);
 }
@@ -64,6 +67,7 @@ function logItemHtml(log) {
 function cardInnerHtml(issue) {
   const isOpen = state.expanded.has(issue.id);
   const { text: dueText, cls: dueClass } = dueInfo(issue);
+  const typeInfo = ISSUE_TYPE_LABELS[issue.type] || ISSUE_TYPE_LABELS.task;
 
   const tagsHtml = issue.tags.map((t) => `<span class="chip tag"># ${esc(t)}</span>`).join('');
 
@@ -75,10 +79,11 @@ function cardInnerHtml(issue) {
     <div class="card-top">
       <input class="card-pick" type="checkbox" data-act="select" data-id="${issue.id}"
              aria-label="选择任务「${esc(issue.title)}」"${picked ? ' checked' : ''} />
-      <h3 class="card-title">${esc(issue.title)}</h3>
+      <h3 class="card-title"><button class="card-open" type="button" data-act="open" data-id="${issue.id}" title="查看详情"><span class="card-no">#${issue.id}</span> ${esc(issue.title)}</button></h3>
     </div>
     ${issue.description ? `<p class="card-desc">${esc(issue.description)}</p>` : ''}
     <div class="card-meta">
+      <span class="chip type type-${esc(issue.type)}">${typeInfo.icon} ${esc(typeInfo.label)}</span>
       <span class="chip prio-${esc(issue.priority)}">${esc(PRIORITY_LABELS[issue.priority])}优先级</span>
       <span class="chip">${esc(issue.assignee || '未指派')}</span>
       <span class="chip due${dueClass}">${esc(dueText)}</span>
@@ -88,7 +93,7 @@ function cardInnerHtml(issue) {
       <span class="card-time">创建于 ${esc(fmtDateTime(issue.createdAt))}</span>
       <div class="card-actions">
         <button class="log-toggle${isOpen ? ' open' : ''}" type="button" data-act="logs" data-id="${issue.id}">
-          变更 ${issue.logs.length}
+          变更 ${issue.logs.length}${issue.commentCount ? ` · 评论 ${issue.commentCount}` : ''}
           <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
         </button>
         <button class="icon-btn" type="button" data-act="edit" data-id="${issue.id}" aria-label="编辑">
@@ -244,7 +249,3 @@ export function renderTabs() {
 }
 
 /** 让「负责人」输入框复用已有负责人名单 */
-export function syncAssigneeList() {
-  const names = [...new Set(state.issues.map((i) => i.assignee).filter(Boolean))].sort();
-  $('#assigneeList').innerHTML = names.map((n) => `<option value="${esc(n)}"></option>`).join('');
-}

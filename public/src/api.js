@@ -65,6 +65,16 @@ export const api = {
   // ---- 基础 ----
   health: () => request('/api/health'),
   list: () => request('/api/issues'),
+  /** issue 详情（含评论全文） */
+  detail: (id) => request(`/api/issues/${id}`),
+  /** 全部用户（负责人选择器等） */
+  users: () => request('/api/users'),
+  /** 添加评论，返回 { id, comments } */
+  addComment: (id, body) =>
+    request(`/api/issues/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
+  /** 删除自己的评论，返回 { deleted, comments } */
+  deleteComment: (commentId, issueId) =>
+    request(`/api/comments/${commentId}?issueId=${issueId}`, { method: 'DELETE' }),
   /** @param {Record<string, unknown>} payload */
   create: (payload) => request('/api/issues', { method: 'POST', body: JSON.stringify(payload) }),
   /**

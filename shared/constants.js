@@ -23,6 +23,21 @@ export const PRIORITY_LABELS = {
   low: '低',
 };
 
+/** issue 类型 */
+export const ISSUE_TYPES = ['bug', 'feature', 'task', 'chore', 'docs'];
+
+/** issue 类型中文名与图标（icon 为纯文本，前后端共用） */
+export const ISSUE_TYPE_LABELS = {
+  bug: { label: 'Bug', icon: '🐞' },
+  feature: { label: '需求', icon: '✨' },
+  task: { label: '任务', icon: '🔧' },
+  chore: { label: '杂务', icon: '🧹' },
+  docs: { label: '文档', icon: '📝' },
+};
+
+/** 筛选维度里「未指派」的哨兵值（assignee_id 为空时使用） */
+export const ASSIGNEE_NONE = '_none';
+
 /** 需要强制填写失败原因的目标状态 */
 export const FAIL_STATUS = 'failed';
 

@@ -1331,3 +1331,249 @@ body:has(#batchBar:not([hidden])) .toast-root {
   font-weight: 600;
   vertical-align: 1px;
 }
+
+/* ==========================================================================
+   issue 类型 chip / 卡片编号 / 「我的」按钮激活态
+   ========================================================================== */
+.card-open {
+  all: unset;
+  cursor: pointer;
+}
+.card-open:hover .card-title,
+.card-open:focus-visible .card-title {
+  color: var(--blue);
+}
+.card-no {
+  color: var(--text-4);
+  font-weight: 600;
+  font-size: 12px;
+  margin-right: 2px;
+}
+
+.chip.type {
+  font-weight: 600;
+}
+.chip.type-bug {
+  background: rgba(255, 59, 48, 0.1);
+  color: var(--red);
+}
+.chip.type-feature {
+  background: rgba(52, 199, 89, 0.12);
+  color: #1f8a3d;
+}
+.chip.type-task {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+.chip.type-chore {
+  background: rgba(142, 142, 147, 0.14);
+  color: var(--text-2);
+}
+.chip.type-docs {
+  background: rgba(175, 82, 222, 0.1);
+  color: var(--purple);
+}
+
+#btnMine[aria-pressed='true'] {
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   issue 详情抽屉
+   ========================================================================== */
+.drawer-root {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+}
+
+.drawer-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  animation: fade 0.2s var(--ease);
+}
+
+.drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: min(480px, calc(100vw - 40px));
+  background: var(--surface);
+  box-shadow: var(--sh-4);
+  display: flex;
+  flex-direction: column;
+  animation: drawer-in 0.26s var(--ease);
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(40px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.drawer-loading {
+  padding: 48px 0;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer-title-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.drawer-no {
+  color: var(--text-4);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.drawer-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  width: 100%;
+}
+
+.drawer-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 22px 28px;
+}
+
+.drawer-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 14px;
+}
+
+.drawer-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.drawer-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.drawer-desc {
+  margin: 0 0 18px;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+
+.drawer-section {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.drawer-section h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.section-count {
+  color: var(--text-4);
+  font-weight: 600;
+}
+
+.drawer-empty {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  color: var(--text-4);
+}
+
+.comment {
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  margin-bottom: 8px;
+}
+
+.comment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.comment-author {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.comment-at {
+  font-size: 11.5px;
+  color: var(--text-4);
+}
+
+.comment-del {
+  margin-left: auto;
+}
+
+.comment-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
+.comment-form {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.comment-form textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 44px;
+}
+
+.drawer .log-item {
+  padding: 6px 0;
+}

@@ -15,14 +15,14 @@
  * 调试：npx @modelcontextprotocol/inspector node mcp-server/index.js
  */
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import { pool, query, withTransaction, runSchema, ensureDatabase, closeDb } from './db.js';
-import { STATUSES, STATUS_LABELS, PRIORITIES, FAIL_STATUS } from '../shared/constants.js';
+import { STATUSES, STATUS_LABELS, PRIORITIES, ISSUE_TYPES, FAIL_STATUS } from '../shared/constants.js';
 
 // ------------------------------------------------------------------
 // 工具函数
@@ -55,25 +55,28 @@ function normalizeTags(input) {
 }
 
 /** issues 行 + 标签/日志行 → 对外 JSON 结构（fetchBoard 与 fetchIssueById 共用） */
-function shapeIssue(i, tags, logs) {
+function shapeIssue(i, tags, logs, commentCount = 0) {
   return {
     id: i.id,
     title: i.title,
+    type: i.type || 'task',
     description: i.description || '',
     priority: i.priority,
     assignee: i.assignee || '',
+    assigneeId: i.assignee_id == null ? null : Number(i.assignee_id),
     tags,
     dueDate: toDateStr(i.due_date),
     status: i.status,
     position: i.position,
     version: Number(i.version ?? 1),
+    commentCount,
     createdAt: toIsoStr(i.created_at),
     updatedAt: toIsoStr(i.updated_at),
     logs,
   };
 }
 
-/** 读取整块看板数据（任务 + 标签 + 状态变更记录） */
+/** 读取整块看板数据（任务 + 标签 + 状态变更记录 + 评论计数） */
 async function fetchBoard(conn = pool) {
   const [issues] = await conn.query('SELECT * FROM issues ORDER BY position ASC, id ASC');
   if (!issues.length) return [];
@@ -89,6 +92,11 @@ async function fetchBoard(conn = pool) {
     `SELECT id, issue_id, from_status, to_status, reason, actor, changed_at
        FROM issue_status_logs WHERE issue_id IN (${placeholders})
       ORDER BY changed_at ASC, id ASC`,
+    ids,
+  );
+  const [commentRows] = await conn.query(
+    `SELECT issue_id, COUNT(*) AS n FROM issue_comments
+      WHERE issue_id IN (${placeholders}) GROUP BY issue_id`,
     ids,
   );
 
@@ -109,8 +117,36 @@ async function fetchBoard(conn = pool) {
       changedAt: toIsoStr(r.changed_at),
     });
   }
+  const commentCountMap = new Map(commentRows.map((r) => [r.issue_id, Number(r.n)]));
 
-  return issues.map((i) => shapeIssue(i, tagMap.get(i.id) || [], logMap.get(i.id) || []));
+  return issues.map((i) =>
+    shapeIssue(i, tagMap.get(i.id) || [], logMap.get(i.id) || [], commentCountMap.get(i.id) || 0),
+  );
+}
+
+/** 按 id 读取评论（详情抽屉 / issue_get 用） */
+async function fetchComments(issueId, conn = pool) {
+  const [rows] = await conn.query(
+    `SELECT id, author_id, author_name, body, created_at
+       FROM issue_comments WHERE issue_id = ?
+      ORDER BY created_at ASC, id ASC`,
+    [issueId],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    authorId: r.author_id == null ? null : Number(r.author_id),
+    authorName: r.author_name || '',
+    body: r.body,
+    createdAt: toIsoStr(r.created_at),
+  }));
+}
+
+/** 单条任务的评论数 */
+async function commentCountOf(issueId, conn = pool) {
+  const [[{ n }]] = await conn.query('SELECT COUNT(*) AS n FROM issue_comments WHERE issue_id = ?', [
+    issueId,
+  ]);
+  return Number(n);
 }
 
 /**
@@ -138,6 +174,7 @@ async function fetchIssueById(id, conn = pool) {
       actor: r.actor || '',
       changedAt: toIsoStr(r.changed_at),
     })),
+    await commentCountOf(id, conn),
   );
 }
 
@@ -148,6 +185,7 @@ async function fetchIssueById(id, conn = pool) {
 const SEED_TASKS = [
   {
     title: '接入企业微信机器人通知',
+    type: 'feature',
     description: '任务状态流转到「已完成」时，自动推送消息到企业微信群。',
     priority: 'low',
     assignee: '林悦',
@@ -158,6 +196,7 @@ const SEED_TASKS = [
   },
   {
     title: '看板数据导出为 CSV',
+    type: 'feature',
     description: '支持按当前筛选条件导出任务清单，便于周会同步。',
     priority: 'medium',
     assignee: '陈默',
@@ -168,6 +207,7 @@ const SEED_TASKS = [
   },
   {
     title: '设计卡片拖拽交互规范',
+    type: 'task',
     description: '明确拖拽占位、目标列高亮、非法投放反馈三种视觉状态。',
     priority: 'high',
     assignee: '苏可',
@@ -178,6 +218,7 @@ const SEED_TASKS = [
   },
   {
     title: '重构筛选器组件',
+    type: 'chore',
     description: '将关键词、优先级、标签、负责人筛选收敛为一个受控组件。',
     priority: 'medium',
     assignee: '陈默',
@@ -188,6 +229,7 @@ const SEED_TASKS = [
   },
   {
     title: 'MySQL 持久化与 MCP 数据层',
+    type: 'task',
     description: '建表、连接池封装，并把全部读写收敛到 MCP tools。',
     priority: 'high',
     assignee: '周野',
@@ -198,6 +240,7 @@ const SEED_TASKS = [
   },
   {
     title: '跨列拖拽与失败原因校验',
+    type: 'task',
     description: '拖入「失败」列前必须填写失败原因，否则拒绝移动并提示。',
     priority: 'high',
     assignee: '苏可',
@@ -208,6 +251,7 @@ const SEED_TASKS = [
   },
   {
     title: '补充空状态插画',
+    type: 'feature',
     description: '为「无匹配任务」与「空看板」两种场景绘制占位插画。',
     priority: 'low',
     assignee: '林悦',
@@ -218,6 +262,7 @@ const SEED_TASKS = [
   },
   {
     title: '搭建前端项目骨架',
+    type: 'chore',
     description: '初始化静态资源目录、样式变量与模块拆分方式。',
     priority: 'medium',
     assignee: '周野',
@@ -228,6 +273,7 @@ const SEED_TASKS = [
   },
   {
     title: '统一圆角与阴影规范',
+    type: 'chore',
     description: '收敛卡片、弹窗、按钮的圆角与阴影层级，贴近 Apple 设计语言。',
     priority: 'low',
     assignee: '苏可',
@@ -238,6 +284,7 @@ const SEED_TASKS = [
   },
   {
     title: '接入第三方 SSO 登录',
+    type: 'feature',
     description: '评估通过 OAuth 2.0 接入统一身份认证的可行性。',
     priority: 'high',
     assignee: '周野',
@@ -263,9 +310,20 @@ async function seedIfEmpty(conn) {
 
     const [res] = await conn.query(
       `INSERT INTO issues
-         (title, description, priority, assignee, due_date, status, position, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [t.title, t.description, t.priority, t.assignee, toDateStr(dueDate), t.status, i, createdAt, createdAt],
+         (title, type, description, priority, assignee, due_date, status, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        t.title,
+        t.type || 'task',
+        t.description,
+        t.priority,
+        t.assignee,
+        toDateStr(dueDate),
+        t.status,
+        i,
+        createdAt,
+        createdAt,
+      ],
     );
     const issueId = res.insertId;
 
@@ -351,6 +409,20 @@ export function createBoardServer() {
     ok({ issues: await fetchBoard() }),
   );
 
+  // 3.5) 读取单条 issue（含评论全文——详情视图用）
+  server.registerTool(
+    'issue_get',
+    {
+      description: '按 id 读取单条 issue：字段、标签、变更记录与评论全文',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async (args) => {
+      const issue = await fetchIssueById(args.id);
+      if (!issue) throw bizError('任务不存在或已被删除');
+      return ok({ issue, comments: await fetchComments(args.id) });
+    },
+  );
+
   // 4) 新建任务
   server.registerTool(
     'issue_create',
@@ -358,9 +430,11 @@ export function createBoardServer() {
       description: '新建一个任务卡片',
       inputSchema: {
         title: z.string().min(1, '标题不能为空').max(255),
+        type: z.enum(ISSUE_TYPES).optional().default('task'),
         description: z.string().max(5000).optional().default(''),
         priority: PriorityEnum.optional().default('medium'),
         assignee: z.string().max(64).optional().default(''),
+        assigneeId: z.number().int().positive().nullable().optional(),
         tags: z
           .union([z.array(z.string()), z.string()])
           .optional()
@@ -377,19 +451,29 @@ export function createBoardServer() {
         throw bizError('创建到「失败」列的任务必须填写失败原因');
       }
 
+      // 负责人必须是真实用户：解析出展示名做冗余，查无此人直接拒绝
+      let assigneeName = args.assignee || '';
+      if (args.assigneeId != null) {
+        const [[u]] = await query('SELECT username, display_name FROM users WHERE id = ?', [args.assigneeId]);
+        if (!u) throw bizError('指定的负责人用户不存在');
+        assigneeName = u.display_name || u.username;
+      }
+
       const issue = await withTransaction(async (conn) => {
         const [[{ next }]] = await conn.query(
           'SELECT COALESCE(MAX(position) + 1, 0) AS next FROM issues WHERE status = ?',
           [status],
         );
         const [res] = await conn.query(
-          `INSERT INTO issues (title, description, priority, assignee, due_date, status, position)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO issues (title, type, description, priority, assignee, assignee_id, due_date, status, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             args.title.trim(),
+            args.type || 'task',
             args.description || '',
             args.priority ?? 'medium',
-            args.assignee || '',
+            assigneeName,
+            args.assigneeId ?? null,
             toDateStr(args.dueDate) || null,
             status,
             Number(next),
@@ -421,9 +505,11 @@ export function createBoardServer() {
       inputSchema: {
         id: z.number().int().positive(),
         title: z.string().min(1).max(255).optional(),
+        type: z.enum(ISSUE_TYPES).optional(),
         description: z.string().max(5000).optional(),
         priority: PriorityEnum.optional(),
         assignee: z.string().max(64).optional(),
+        assigneeId: z.number().int().positive().nullable().optional(),
         tags: z.union([z.array(z.string()), z.string()]).optional(),
         dueDate: z.string().nullable().optional(),
         status: StatusEnum.optional(),
@@ -433,6 +519,20 @@ export function createBoardServer() {
       },
     },
     async (args) => {
+      // 负责人变更：null=清空指派，数字=校验用户存在；名称冗余同步
+      let assigneePatch = { assignee: undefined, assignee_id: undefined };
+      if (args.assigneeId !== undefined) {
+        if (args.assigneeId === null) {
+          assigneePatch = { assignee: '', assignee_id: null };
+        } else {
+          const [[u]] = await query('SELECT username, display_name FROM users WHERE id = ?', [
+            args.assigneeId,
+          ]);
+          if (!u) throw bizError('指定的负责人用户不存在');
+          assigneePatch = { assignee: u.display_name || u.username, assignee_id: args.assigneeId };
+        }
+      }
+
       const updated = await withTransaction(async (conn) => {
         const [[row]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
         if (!row) throw bizError('任务不存在或已被删除');
@@ -456,23 +556,27 @@ export function createBoardServer() {
 
         const patch = {
           title: args.title !== undefined ? args.title.trim() : row.title,
+          type: args.type ?? row.type ?? 'task',
           description: args.description !== undefined ? args.description : row.description,
           priority: args.priority ?? row.priority,
-          assignee: args.assignee !== undefined ? args.assignee : row.assignee,
+          assignee: assigneePatch.assignee ?? row.assignee,
+          assignee_id: assigneePatch.assignee_id !== undefined ? assigneePatch.assignee_id : row.assignee_id,
           due_date: args.dueDate !== undefined ? toDateStr(args.dueDate) : row.due_date,
           status: nextStatus,
         };
 
         await conn.query(
           `UPDATE issues
-              SET title = ?, description = ?, priority = ?, assignee = ?, due_date = ?, status = ?,
+              SET title = ?, type = ?, description = ?, priority = ?, assignee = ?, assignee_id = ?, due_date = ?, status = ?,
                   version = version + 1
             WHERE id = ?`,
           [
             patch.title,
+            patch.type,
             patch.description,
             patch.priority,
             patch.assignee,
+            patch.assignee_id,
             patch.due_date,
             patch.status,
             args.id,
@@ -629,6 +733,49 @@ export function createBoardServer() {
     },
   );
 
+  // 7.2) 评论：新增（人/AI 通用；author_name 自报身份并留名时间线）
+  server.registerTool(
+    'issue_comment_add',
+    {
+      description: '给 issue 添加一条评论；authorName 会展示给所有人（AI 客户端请自报身份）',
+      inputSchema: {
+        issueId: z.number().int().positive(),
+        body: z.string().min(1, '评论内容不能为空').max(5000),
+        authorId: z.number().int().positive().nullable().optional(),
+        authorName: z.string().max(64).optional().default(''),
+      },
+    },
+    async (args) => {
+      const [[issue]] = await query('SELECT id FROM issues WHERE id = ?', [args.issueId]);
+      if (!issue) throw bizError('任务不存在或已被删除');
+      const [res] = await query(
+        'INSERT INTO issue_comments (issue_id, author_id, author_name, body) VALUES (?, ?, ?, ?)',
+        [args.issueId, args.authorId ?? null, args.authorName || '', args.body.trim()],
+      );
+      return ok({ created: true, id: res.insertId, comments: await fetchComments(args.issueId) });
+    },
+  );
+
+  // 7.3) 评论：删除（是否允许由 HTTP 层按作者身份判定后调用）
+  server.registerTool(
+    'issue_comment_delete',
+    {
+      description: '删除一条评论（调用方需已完成作者身份校验）',
+      inputSchema: {
+        commentId: z.number().int().positive(),
+        issueId: z.number().int().positive(),
+      },
+    },
+    async (args) => {
+      const [res] = await query('DELETE FROM issue_comments WHERE id = ? AND issue_id = ?', [
+        args.commentId,
+        args.issueId,
+      ]);
+      if (!res.affectedRows) throw bizError('评论不存在或已被删除');
+      return ok({ deleted: true, comments: await fetchComments(args.issueId) });
+    },
+  );
+
   // 7.5) 看板概览：为 AI 客户端提供一次调用即可理解的紧凑快照
   server.registerTool(
     'board_summary',
@@ -644,6 +791,8 @@ export function createBoardServer() {
 
       const byStatus = {};
       for (const s of STATUSES) byStatus[s] = issues.filter((i) => i.status === s).length;
+      const byType = {};
+      for (const t of ISSUE_TYPES) byType[t] = issues.filter((i) => (i.type || 'task') === t).length;
 
       const overdue = open
         .filter((i) => i.dueDate && i.dueDate < today)
@@ -669,6 +818,7 @@ export function createBoardServer() {
       return ok({
         total: issues.length,
         byStatus,
+        byType,
         statusLabels: STATUS_LABELS,
         overdueCount: overdue.length,
         overdue,
@@ -749,6 +899,22 @@ export function createBoardServer() {
     async (args) => {
       const [[row]] = await query('SELECT * FROM users WHERE api_token = ?', [args.token]);
       return ok({ user: row ? shapeUser(row) : null });
+    },
+  );
+
+  // 9.5.5) 用户列表（负责人选择器等只读用途；脱敏，不含凭据字段）
+  server.registerTool(
+    'user_list',
+    { description: '返回全部用户（id/username/displayName），供负责人选择等只读用途' },
+    async () => {
+      const [rows] = await query('SELECT id, username, display_name FROM users ORDER BY id ASC');
+      return ok({
+        users: rows.map((r) => ({
+          id: Number(r.id),
+          username: r.username,
+          displayName: r.display_name || '',
+        })),
+      });
     },
   );
 

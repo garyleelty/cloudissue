@@ -2,7 +2,7 @@
  * 筛选下拉（多选）的渲染与交互。
  */
 import { state, notify } from './state.js';
-import { PRIORITIES, PRIORITY_LABELS } from '../../shared/constants.js';
+import { PRIORITIES, PRIORITY_LABELS, ASSIGNEE_NONE } from '../../shared/constants.js';
 import { esc } from './utils.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -21,9 +21,15 @@ function collectOptions(kind) {
       .sort()
       .map((t) => ({ value: t, label: `# ${t}` }));
   }
-  return [...new Set(state.issues.map((i) => i.assignee || '未指派'))]
-    .sort()
-    .map((a) => ({ value: a, label: a }));
+  // 负责人：以用户表为骨架（含「未指派」），再补上历史卡片的自由文本负责人
+  const out = [{ value: ASSIGNEE_NONE, label: '未指派' }];
+  for (const u of state.users) {
+    out.push({ value: String(u.id), label: u.displayName || u.username });
+  }
+  for (const a of [...new Set(state.issues.filter((i) => i.assigneeId == null).map((i) => i.assignee))]) {
+    if (a) out.push({ value: a, label: a });
+  }
+  return out;
 }
 
 /**

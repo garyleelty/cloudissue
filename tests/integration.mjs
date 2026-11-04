@@ -576,6 +576,117 @@ async function main() {
     String(newTok.status),
   );
 
+  console.log('\n--- 15. issue board 核心能力（编号/类型/指派/评论） ---');
+  // 用户列表（负责人选择器数据源）
+  const usersRes = await api('/api/users');
+  check(
+    '用户列表返回且已脱敏',
+    usersRes.status === 200 &&
+      Array.isArray(usersRes.data.users) &&
+      usersRes.data.users.every((u) => !u.passwordHash && !u.apiToken),
+    JSON.stringify(usersRes.data).slice(0, 120),
+  );
+  const meUser = (usersRes.data.users || []).find((u) => u.username === USER_A);
+  check('用户列表包含当前登录用户', Boolean(meUser), JSON.stringify(meUser));
+
+  // 带类型与负责人建卡
+  const typed = await post('/api/issues', {
+    title: 'board 能力验证卡',
+    type: 'bug',
+    assigneeId: meUser.id,
+    status: 'backlog',
+    priority: 'high',
+  });
+  const typedIssue = typed.data.issue;
+  const typedId = typed.data.id;
+  check(
+    '建卡返回 201 且类型正确',
+    typed.status === 201 && typedIssue.type === 'bug',
+    JSON.stringify(typedIssue).slice(0, 140),
+  );
+  check(
+    'assigneeId 写入且解析出展示名',
+    typedIssue.assigneeId === meUser.id && typedIssue.assignee === (meUser.displayName || USER_A),
+    JSON.stringify({ assigneeId: typedIssue.assigneeId, assignee: typedIssue.assignee }),
+  );
+  check('返回 commentCount 字段', Number.isInteger(typedIssue.commentCount), String(typedIssue.commentCount));
+
+  // 无效负责人被拒
+  const badAssignee = await post('/api/issues', { title: '无效负责人', assigneeId: 99999999 });
+  check('assigneeId 不存在时建卡被拒', badAssignee.status === 400, JSON.stringify(badAssignee.data));
+
+  // 详情端点：字段 + 评论全文
+  const detail = await api(`/api/issues/${typedId}`);
+  check(
+    '详情端点返回 issue 与 comments',
+    detail.status === 200 && detail.data.issue?.id === typedId && Array.isArray(detail.data.comments),
+    JSON.stringify(detail.data).slice(0, 120),
+  );
+
+  // 详情抽屉的评论闭环：添加 → 详情可见 → 删他人 403 → 删自己成功
+  const c1 = await post(`/api/issues/${typedId}/comments`, { body: '第一条评论（A）' });
+  check(
+    '添加评论返回 201 与作者',
+    c1.status === 201 && c1.data.comments?.some((c) => c.authorName === (meUser.displayName || USER_A)),
+    JSON.stringify(c1.data).slice(0, 140),
+  );
+  const detail2 = await api(`/api/issues/${typedId}`);
+  check('评论出现在详情里', detail2.data.comments?.length === 1, JSON.stringify(detail2.data.comments));
+
+  // B 登录后尝试删 A 的评论 → 403
+  cookieJar = '';
+  const loginB2 = await post('/api/auth/login', { username: USER_B, password: 'password123' });
+  check('B 重新登录成功', loginB2.status === 200, String(loginB2.status));
+  const forbidden = await del(`/api/comments/${c1.data.id}?issueId=${typedId}`);
+  check('删除他人评论返回 403', forbidden.status === 403, JSON.stringify(forbidden.data));
+
+  // B 自己评论再删除 → 200
+  const c2 = await post(`/api/issues/${typedId}/comments`, { body: 'B 的评论' });
+  const delOwn = await del(`/api/comments/${c2.data.id}?issueId=${typedId}`);
+  check('删除自己的评论成功', delOwn.status === 200, JSON.stringify(delOwn.data));
+  cookieJar = cookieANew; // 回到 A 的会话
+
+  // 更新类型与清空指派
+  const updTyped = await put(`/api/issues/${typedId}`, { type: 'feature', assigneeId: null });
+  check(
+    '更新类型成功且清空指派',
+    updTyped.status === 200 &&
+      updTyped.data.issue.type === 'feature' &&
+      updTyped.data.issue.assigneeId === null,
+    JSON.stringify({ type: updTyped.data.issue?.type, assigneeId: updTyped.data.issue?.assigneeId }),
+  );
+
+  // 搜索关键词支持 #编号直达（keyword 匹配含 #id）
+  const listAll = await api('/api/issues');
+  const targetCard = (listAll.data.issues || []).find((i) => i.id === typedId);
+
+  // board_summary 带 byType
+  const sum2 = await mcpCall(rotated.data.token, 6, 'tools/call', { name: 'board_summary', arguments: {} });
+  const sumOut = jsonContent(sum2.data);
+  check(
+    'board_summary 包含 byType',
+    Boolean(sumOut?.byType && sumOut.byType.bug >= 0),
+    JSON.stringify(sumOut?.byType),
+  );
+
+  // AI 经 /mcp 评论（自报身份）
+  const aiComment = await mcpCall(rotated.data.token, 7, 'tools/call', {
+    name: 'issue_comment_add',
+    arguments: { issueId: typedId, body: 'AI 联调记录', authorName: 'ai:integration-test' },
+  });
+  const aiCommentOut = jsonContent(aiComment.data);
+  check(
+    'AI 经 /mcp 评论并留名',
+    aiComment.status === 200 && aiCommentOut.comments?.some((c) => c.authorName === 'ai:integration-test'),
+    JSON.stringify(aiCommentOut).slice(0, 160),
+  );
+
+  // 清理
+  const delTyped = await del(`/api/issues/${typedId}`);
+  check('清理验证卡成功', delTyped.status === 200, JSON.stringify(delTyped.data));
+  const afterTyped = await api(`/api/issues/${typedId}`);
+  check('验证卡已删除（详情 404 类错误）', afterTyped.status >= 400, String(afterTyped.status));
+
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
   console.log(`=====================================\n`);

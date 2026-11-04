@@ -6,27 +6,28 @@
 
 ## 一、功能特性
 
-| 能力           | 说明                                                                                               |
-| -------------- | -------------------------------------------------------------------------------------------------- |
-| 多用户认证     | 注册 / 登录 / 改密，JWT httpOnly cookie 会话；共享团队看板——登录用户同看一块板                     |
-| 五列固定看板   | `未规划 → 规划中 → 进行中 → 已完成 / 失败`                                                         |
-| 拖拽流转       | 支持跨列移动与列内排序；鼠标走原生拖拽，**移动端长按卡片即可拖拽**                                 |
-| 拖拽视觉反馈   | 目标列整体高亮（进入失败列时为红色高亮）+ 虚线占位块实时跟随                                       |
-| 失败原因强校验 | 拖入「失败」列弹出原因弹窗；未填写则**拒绝移动**并给出明确提示                                     |
-| 卡片字段       | 标题、描述、优先级（高/中/低）、负责人、标签（多值）、截止日期、创建时间                           |
-| 状态变更记录   | 每次状态变动自动追加「变更时间 + 原状态 + 新状态」；因失败变更时一并显示失败原因                   |
-| 增删改         | 新建 / 编辑 / 删除，删除需二次确认                                                                 |
-| 批量操作       | 卡片复选框或列头全选后，可一次性**批量移动**到目标列或**批量删除**；移入「失败」列同样要求填写原因 |
-| 乐观更新       | 拖拽落位后立即本地生效，不等服务端往返；请求失败自动回滚并重新拉取                                 |
-| 跨标签页同步   | 同一浏览器多开时，一处改动其他标签页自动跟上；切回前台再兜底拉一次                                 |
-| 并发保护       | 任务带 `version` 版本号，编辑/移动/批量操作均携带；被他人抢先修改则返回 409，不静默覆盖            |
-| 组合筛选       | 关键词（标题 & 描述）+ 优先级 + 标签 + 负责人，多条件 AND 组合，支持一键清空                       |
-| 列计数         | 每列顶部实时显示 `筛选后数量/总数`，如 `3/10`                                                      |
-| 持久化         | MySQL 8，数据读写全部经 MCP；仅在数据表为空时初始化示例任务                                        |
-| 安全加固       | helmet 安全头、接口限流、错误信息脱敏、XSS 转义、环境变量 fail-fast 校验                           |
-| 工程设施       | GitHub Actions CI、ESLint + Prettier、Docker 一键部署（应用 + 数据库）、结构化日志                 |
-| 设计风格       | Apple 设计语言：充足留白、大圆角、浅色系、分层细腻阴影、SF 字体栈                                  |
-| 响应式         | 桌面端五列并排；移动端横向滚动（scroll-snap）+ 顶部列切换标签联动                                  |
+| 能力           | 说明                                                                                                           |
+| -------------- | -------------------------------------------------------------------------------------------------------------- |
+| 多用户认证     | 注册 / 登录 / 改密，JWT httpOnly cookie 会话；共享团队看板——登录用户同看一块板                                 |
+| 五列固定看板   | `未规划 → 规划中 → 进行中 → 已完成 / 失败`                                                                     |
+| 拖拽流转       | 支持跨列移动与列内排序；鼠标走原生拖拽，**移动端长按卡片即可拖拽**                                             |
+| 拖拽视觉反馈   | 目标列整体高亮（进入失败列时为红色高亮）+ 虚线占位块实时跟随                                                   |
+| 失败原因强校验 | 拖入「失败」列弹出原因弹窗；未填写则**拒绝移动**并给出明确提示                                                 |
+| 卡片字段       | `#编号`、类型（🐞Bug/✨需求/🔧任务/🧹杂务/📝文档）、标题、描述、优先级、负责人（关联真实用户）、标签、截止日期 |
+| 详情抽屉与评论 | 点卡片标题侧滑出详情：字段一览、评论（可删自己的）、活动时间线；AI 经 MCP 留的评论同样留名                     |
+| 状态变更记录   | 每次状态变动自动追加「变更时间 + 原状态 + 新状态」；因失败变更时一并显示失败原因                               |
+| 增删改         | 新建 / 编辑 / 删除，删除需二次确认                                                                             |
+| 批量操作       | 卡片复选框或列头全选后，可一次性**批量移动**到目标列或**批量删除**；移入「失败」列同样要求填写原因             |
+| 乐观更新       | 拖拽落位后立即本地生效，不等服务端往返；请求失败自动回滚并重新拉取                                             |
+| 跨标签页同步   | 同一浏览器多开时，一处改动其他标签页自动跟上；切回前台再兜底拉一次                                             |
+| 并发保护       | 任务带 `version` 版本号，编辑/移动/批量操作均携带；被他人抢先修改则返回 409，不静默覆盖                        |
+| 组合筛选       | 关键词（标题 & 描述）+ 优先级 + 标签 + 负责人，多条件 AND 组合，支持一键清空                                   |
+| 列计数         | 每列顶部实时显示 `筛选后数量/总数`，如 `3/10`                                                                  |
+| 持久化         | MySQL 8，数据读写全部经 MCP；仅在数据表为空时初始化示例任务                                                    |
+| 安全加固       | helmet 安全头、接口限流、错误信息脱敏、XSS 转义、环境变量 fail-fast 校验                                       |
+| 工程设施       | GitHub Actions CI、ESLint + Prettier、Docker 一键部署（应用 + 数据库）、结构化日志                             |
+| 设计风格       | Apple 设计语言：充足留白、大圆角、浅色系、分层细腻阴影、SF 字体栈                                              |
+| 响应式         | 桌面端五列并排；移动端横向滚动（scroll-snap）+ 顶部列切换标签联动                                              |
 
 ---
 
@@ -84,7 +85,7 @@ cloudissue/
 Express HTTP 层 (server/index.js)      ← 路由 / 鉴权 / 限流 / 静态资源，持有 MCP Client
    │  MCP over stdio（断连自动重连）
    ▼
-MCP 数据服务 (mcp-server/index.js)     ← 唯一持有 MySQL 连接池，暴露 15 个 tools
+MCP 数据服务 (mcp-server/index.js)     ← 唯一持有 MySQL 连接池，暴露 19 个 tools
    │  mysql2
    ▼
 MySQL 8 (issue_board)
@@ -337,21 +338,25 @@ npx @modelcontextprotocol/inspector node mcp-server/index.js
 除 `/api/health` 外，所有接口都需要登录（JWT httpOnly cookie `ci_session`），
 未登录返回 **401**。认证接口受独立限流保护（默认 20 次 / 15 分钟 / IP）。
 
-| 方法     | 路径                       | 说明                                                                                     |
-| -------- | -------------------------- | ---------------------------------------------------------------------------------------- |
-| `GET`    | `/api/health`              | 健康检查（经 MCP 探测数据库，公开）                                                      |
-| `POST`   | `/api/auth/register`       | 注册：`{ username, password, displayName? }`，成功即建立会话                             |
-| `POST`   | `/api/auth/login`          | 登录：`{ username, password }`；不区分「用户不存在/密码错」防枚举                        |
-| `POST`   | `/api/auth/logout`         | 登出（清 cookie）                                                                        |
-| `GET`    | `/api/auth/me`             | 当前会话用户                                                                             |
-| `PUT`    | `/api/auth/password`       | 改密：`{ oldPassword, newPassword }`，**所有旧会话立即失效**                             |
-| `GET`    | `/api/issues`              | 返回全部任务（含 `tags` 与 `logs`）                                                      |
-| `POST`   | `/api/issues`              | 新建任务                                                                                 |
-| `PUT`    | `/api/issues/:id`          | 更新任务字段（含状态变更）                                                               |
-| `POST`   | `/api/issues/:id/move`     | 移动 / 排序：`{ toStatus, afterId, failReason, expectedVersion? }`；版本冲突返回 **409** |
-| `POST`   | `/api/issues/batch/move`   | 批量移动：`{ items: [{id, expectedVersion?}], toStatus, failReason? }`（兼容旧 `ids[]`） |
-| `POST`   | `/api/issues/batch/delete` | 批量删除：`{ ids[] }`                                                                    |
-| `DELETE` | `/api/issues/:id`          | 删除任务                                                                                 |
+| 方法     | 路径                         | 说明                                                                                     |
+| -------- | ---------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET`    | `/api/health`                | 健康检查（经 MCP 探测数据库，公开）                                                      |
+| `POST`   | `/api/auth/register`         | 注册：`{ username, password, displayName? }`，成功即建立会话                             |
+| `POST`   | `/api/auth/login`            | 登录：`{ username, password }`；不区分「用户不存在/密码错」防枚举                        |
+| `POST`   | `/api/auth/logout`           | 登出（清 cookie）                                                                        |
+| `GET`    | `/api/auth/me`               | 当前会话用户                                                                             |
+| `PUT`    | `/api/auth/password`         | 改密：`{ oldPassword, newPassword }`，**所有旧会话立即失效**                             |
+| `GET`    | `/api/issues`                | 返回全部任务（含 `tags`/`logs`/`commentCount`）                                          |
+| `GET`    | `/api/issues/:id`            | issue 详情（含评论全文）                                                                 |
+| `GET`    | `/api/users`                 | 用户列表（负责人选择器，脱敏）                                                           |
+| `POST`   | `/api/issues/:id/comments`   | 添加评论：`{ body }`                                                                     |
+| `DELETE` | `/api/comments/:id?issueId=` | 删除评论（仅作者本人，否则 403）                                                         |
+| `POST`   | `/api/issues`                | 新建任务                                                                                 |
+| `PUT`    | `/api/issues/:id`            | 更新任务字段（含状态变更）                                                               |
+| `POST`   | `/api/issues/:id/move`       | 移动 / 排序：`{ toStatus, afterId, failReason, expectedVersion? }`；版本冲突返回 **409** |
+| `POST`   | `/api/issues/batch/move`     | 批量移动：`{ items: [{id, expectedVersion?}], toStatus, failReason? }`（兼容旧 `ids[]`） |
+| `POST`   | `/api/issues/batch/delete`   | 批量删除：`{ ids[] }`                                                                    |
+| `DELETE` | `/api/issues/:id`            | 删除任务                                                                                 |
 
 > 批量接口不新增 MCP tool：服务端只是对同一批 id 循环调用既有的 `issue_move` / `issue_delete`，
 > 校验（状态枚举、失败原因必填）依旧留在 MCP 内。两个路由注册在 `/api/issues/:id/move` 之前，
@@ -497,9 +502,9 @@ curl -X POST http://localhost:5173/mcp \
 
 ```bash
 npm run lint       # ESLint 检查
-npm run test:mcp   # MCP 链路冒烟：验证 stdio 传输正常、15 个 tools 全部注册（不需服务）
-npm test           # 端到端集成测试：全链路、业务规则、认证与 AI 接入（94 项断言，需先起服务）
-npm run test:ui    # UI 冒烟（jsdom，74 项断言，不需服务与数据库）
+npm run test:mcp   # MCP 链路冒烟：验证 stdio 传输正常、19 个 tools 全部注册（不需服务）
+npm test           # 端到端集成测试：全链路、业务规则、认证与 AI 接入（109 项断言，需先起服务）
+npm run test:ui    # UI 冒烟（jsdom，86 项断言，不需服务与数据库）
 ```
 
 跑 `npm test` 前请调高认证限流（认证套件会发起大量登录尝试）：

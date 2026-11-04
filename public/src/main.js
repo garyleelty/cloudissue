@@ -23,12 +23,21 @@ import {
   initModals,
   openForm,
   closeModals,
+  populateAssigneeOptions,
   askDelete,
   askDeleteMany,
   askFailureReason,
   cancelPendingReason,
   hasPendingReason,
 } from './modals.js';
+import {
+  initDrawer,
+  bindDrawer,
+  openDrawer,
+  closeDrawer,
+  drawerIssueId,
+  refresh as refreshDrawer,
+} from './drawer.js';
 import { STATUSES, STATUS_LABELS, FAIL_STATUS, MOBILE_BREAKPOINT } from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -42,12 +51,24 @@ async function load() {
     state.issues = data.issues ?? [];
     // 勾选里可能残留已被别处删掉的卡片，重新拉取后顺手清掉
     pruneSelection(new Set(state.issues.map((i) => i.id)));
-    render.syncAssigneeList();
     syncDropdowns();
     notify();
+    refreshDrawer();
   } catch (err) {
     // 401 已由 ci:unauthorized 统一切到登录视图，这里不重复打扰
     if (err.status !== 401) toast(`加载失败：${err.message}`, 'error');
+  }
+}
+
+/** 登录后拉一次用户列表（负责人选择器 + 负责人筛选的骨架） */
+async function loadUsers() {
+  try {
+    const data = await api.users();
+    state.users = data.users ?? [];
+    populateAssigneeOptions();
+    syncDropdowns();
+  } catch {
+    /* 用户列表失败不致命：负责人退化为历史文本展示 */
   }
 }
 
@@ -71,14 +92,19 @@ const authView = $('#authView');
 let authMode = 'login';
 
 function showAuth() {
+  state.me = null;
+  state.users = [];
+  closeDrawer();
   authView.hidden = false;
   $('#userChip').hidden = true;
   $('#btnLogout').hidden = true;
   $('#authError').hidden = true;
+  $('#btnMine').setAttribute('aria-pressed', 'false');
   authView.querySelector('[name="username"]')?.focus();
 }
 
 function showBoard(user) {
+  state.me = user;
   authView.hidden = true;
   const chip = $('#userChip');
   chip.textContent = user.displayName || user.username;
@@ -86,6 +112,7 @@ function showBoard(user) {
   chip.hidden = false;
   $('#btnLogout').hidden = false;
   load();
+  loadUsers();
 }
 
 function bindAuthView() {
@@ -152,6 +179,20 @@ function bindGlobalEvents() {
     resetFilters();
     clearSelection();
     $('#fKeyword').value = '';
+    $('#btnMine').setAttribute('aria-pressed', 'false');
+    notify();
+  });
+
+  // 「我的」：一键只看指派给自己的 issue（再点一次取消）
+  $('#btnMine').addEventListener('click', () => {
+    const pressed = $('#btnMine').getAttribute('aria-pressed') === 'true';
+    if (pressed) {
+      state.filters.assignee.delete(String(state.me?.id));
+      $('#btnMine').setAttribute('aria-pressed', 'false');
+    } else {
+      if (state.me?.id) state.filters.assignee.add(String(state.me.id));
+      $('#btnMine').setAttribute('aria-pressed', 'true');
+    }
     notify();
   });
 
@@ -173,6 +214,10 @@ function bindGlobalEvents() {
     // 拖拽原因弹窗必须走取消流程，否则 Promise 悬挂
     if (hasPendingReason()) {
       cancelPendingReason();
+      return;
+    }
+    if (drawerIssueId()) {
+      closeDrawer();
       return;
     }
     if (!$('#modalRoot').hidden) closeModals();
@@ -202,6 +247,8 @@ function bindGlobalEvents() {
     if (btn.dataset.act === 'select') {
       toggleSelected(id);
       notify();
+    } else if (btn.dataset.act === 'open') {
+      openDrawer(id);
     } else if (btn.dataset.act === 'logs') {
       if (state.expanded.has(id)) state.expanded.delete(id);
       else state.expanded.add(id);
@@ -313,6 +360,8 @@ async function init() {
   initDnd({ onChanged: load });
   initModals({ onChanged: load });
   initCrossTabSync(load);
+  initDrawer();
+  bindDrawer({ onEdit: (issue) => openForm(issue) });
   bindDropdowns();
   bindGlobalEvents();
   bindBatchBar();

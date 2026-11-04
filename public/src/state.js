@@ -7,6 +7,8 @@ import { STATUSES } from '../../shared/constants.js';
 /**
  * @typedef {Object} BoardState
  * @property {any[]} issues
+ * @property {{ id: number, username: string, displayName: string }[]} users  全部用户（负责人选择/筛选用）
+ * @property {{ id: number, username: string, displayName: string } | null} me  当前登录用户
  * @property {number | null} editingId
  * @property {Set<number>} expanded   展开变更记录的卡片
  * @property {{ keyword: string, priority: Set<string>, tag: Set<string>, assignee: Set<string> }} filters
@@ -18,6 +20,8 @@ import { STATUSES } from '../../shared/constants.js';
 /** @type {BoardState} */
 export const state = {
   issues: [],
+  users: [],
+  me: null,
   editingId: null,
   expanded: new Set(),
   filters: {

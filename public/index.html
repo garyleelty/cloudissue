@@ -136,6 +136,7 @@
           <div class="drop-panel" id="panelAssignee" role="group"></div>
         </div>
 
+        <button id="btnMine" class="btn btn-ghost" type="button" aria-pressed="false">我的</button>
         <button id="btnClear" class="btn btn-ghost btn-clear" type="button">清空筛选</button>
       </div>
     </section>
@@ -232,6 +233,22 @@
             <input name="title" type="text" maxlength="255" required placeholder="一句话描述这个任务" />
           </label>
 
+          <div class="fm-grid">
+            <label class="fm-row">
+              <span class="fm-label">类型</span>
+              <select name="type"></select>
+            </label>
+
+            <label class="fm-row">
+              <span class="fm-label">优先级</span>
+              <select name="priority">
+                <option value="high">高</option>
+                <option value="medium" selected>中</option>
+                <option value="low">低</option>
+              </select>
+            </label>
+          </div>
+
           <label class="fm-row">
             <span class="fm-label">描述</span>
             <textarea
@@ -244,22 +261,12 @@
 
           <div class="fm-grid">
             <label class="fm-row">
-              <span class="fm-label">优先级</span>
-              <select name="priority">
-                <option value="high">高</option>
-                <option value="medium" selected>中</option>
-                <option value="low">低</option>
+              <span class="fm-label">负责人</span>
+              <select name="assigneeId">
+                <option value="">未指派</option>
               </select>
             </label>
 
-            <label class="fm-row">
-              <span class="fm-label">负责人</span>
-              <input name="assignee" type="text" maxlength="64" placeholder="如：周野" list="assigneeList" />
-              <datalist id="assigneeList"></datalist>
-            </label>
-          </div>
-
-          <div class="fm-grid">
             <label class="fm-row">
               <span class="fm-label">状态</span>
               <select name="status"></select>
@@ -352,6 +359,12 @@
     </div>
 
     <div id="toastRoot" class="toast-root" aria-live="polite"></div>
+
+    <!-- ===================== issue 详情抽屉 ===================== -->
+    <div id="drawerRoot" class="drawer-root" hidden>
+      <div class="drawer-mask" data-drawer-close="1"></div>
+      <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle"></aside>
+    </div>
 
     <script type="module" src="/src/main.js"></script>
   </body>

@@ -105,6 +105,8 @@ app.use('/mcp', apiLimiter, authByToken, mcpHttpRouter);
 
 // 业务接口一律先过鉴权（/api/health 保持公开，供容器 healthcheck）
 app.use('/api/issues', authRequired);
+app.use('/api/users', authRequired);
+app.use('/api/comments', authRequired);
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
 
@@ -122,6 +124,70 @@ app.get(
   '/api/issues',
   asyncHandler(async (_req, res) => {
     const data = await callTool('issue_list');
+    res.json(data);
+  }),
+);
+
+/** 用户列表（负责人选择器等只读用途） */
+app.get(
+  '/api/users',
+  asyncHandler(async (_req, res) => {
+    const data = await callTool('user_list');
+    res.json(data);
+  }),
+);
+
+/** issue 详情（字段 + 评论全文） */
+app.get(
+  '/api/issues/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: '非法的任务 ID' });
+    }
+    const data = await callTool('issue_get', { id });
+    res.json(data);
+  }),
+);
+
+/** 添加评论 */
+app.post(
+  '/api/issues/:id/comments',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: '非法的任务 ID' });
+    }
+    const body = String(req.body?.body || '').trim();
+    if (!body) return res.status(400).json({ error: '评论内容不能为空' });
+    if (body.length > 5000) return res.status(400).json({ error: '评论最长 5000 字' });
+
+    const data = await callTool('issue_comment_add', {
+      issueId: id,
+      body,
+      authorId: req.user.id,
+      authorName: req.user.displayName || req.user.username,
+    });
+    res.status(201).json(data);
+  }),
+);
+
+/** 删除评论：仅作者本人 */
+app.delete(
+  '/api/comments/:id',
+  asyncHandler(async (req, res) => {
+    const commentId = Number(req.params.id);
+    const issueId = Number(req.query.issueId);
+    if (!Number.isInteger(commentId) || commentId <= 0 || !Number.isInteger(issueId) || issueId <= 0) {
+      return res.status(400).json({ error: '非法的评论 ID' });
+    }
+    const detail = await callTool('issue_get', { id: issueId });
+    const target = (detail.comments || []).find((c) => c.id === commentId);
+    if (!target) return res.status(404).json({ error: '评论不存在或已被删除' });
+    if (target.authorId !== req.user.id) {
+      return res.status(403).json({ error: '只能删除自己的评论' });
+    }
+    const data = await callTool('issue_comment_delete', { commentId, issueId });
     res.json(data);
   }),
 );

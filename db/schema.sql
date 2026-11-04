@@ -45,6 +45,19 @@ PREPARE ci_stmt FROM @ci_ddl;
 EXECUTE ci_stmt;
 DEALLOCATE PREPARE ci_stmt;
 
+-- 幂等补列：issue 类型（bug/feature/task/chore/docs）
+SET @ci_ddl := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'issues'
+       AND COLUMN_NAME = 'type') = 0,
+  'ALTER TABLE `issues` ADD COLUMN `type` ENUM(''bug'',''feature'',''task'',''chore'',''docs'') NOT NULL DEFAULT ''task'' COMMENT ''issue 类型'' AFTER `title`',
+  'DO 0'
+);
+PREPARE ci_stmt FROM @ci_ddl;
+EXECUTE ci_stmt;
+DEALLOCATE PREPARE ci_stmt;
+
 -- ------------------------------------------------------------
 -- 1.5 用户表（认证身份；看板为共享模式，任务不挂归属）
 --     token_version：密码修改时 +1，使所有旧 JWT 立即失效
@@ -69,6 +82,20 @@ SET @ci_ddl := IF(
        AND TABLE_NAME = 'users'
        AND COLUMN_NAME = 'api_token') = 0,
   'ALTER TABLE `users` ADD COLUMN `api_token` VARCHAR(64) NULL COMMENT ''个人 API Token（Bearer），供 AI/MCP 客户端使用'' AFTER `token_version`, ADD UNIQUE KEY `uk_users_api_token` (`api_token`)',
+  'DO 0'
+);
+PREPARE ci_stmt FROM @ci_ddl;
+EXECUTE ci_stmt;
+DEALLOCATE PREPARE ci_stmt;
+
+-- 幂等补列：负责人关联真实用户（可空；旧数据继续用 assignee 文本）。
+-- 必须放在 users 表建表之后（外键引用 users.id）。
+SET @ci_ddl := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'issues'
+       AND COLUMN_NAME = 'assignee_id') = 0,
+  'ALTER TABLE `issues` ADD COLUMN `assignee_id` BIGINT UNSIGNED NULL COMMENT ''负责人用户 id'' AFTER `assignee`, ADD KEY `idx_issues_assignee` (`assignee_id`), ADD CONSTRAINT `fk_issues_assignee` FOREIGN KEY (`assignee_id`) REFERENCES `users`(`id`) ON DELETE SET NULL',
   'DO 0'
 );
 PREPARE ci_stmt FROM @ci_ddl;
@@ -116,6 +143,25 @@ SET @ci_ddl := IF(
 PREPARE ci_stmt FROM @ci_ddl;
 EXECUTE ci_stmt;
 DEALLOCATE PREPARE ci_stmt;
+
+-- ------------------------------------------------------------
+-- 3.5 评论表（issue 详情页的讨论；与状态变更记录分开，语义不同）
+--     author_name 冗余存展示名：用户被删后评论仍可读
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `issue_comments` (
+  `id`          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `issue_id`    BIGINT UNSIGNED NOT NULL,
+  `author_id`   BIGINT UNSIGNED NULL COMMENT '作者用户 id',
+  `author_name` VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '作者展示名（冗余，人/AI 均可）',
+  `body`        TEXT            NOT NULL COMMENT '评论内容',
+  `created_at`  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '评论时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_comments_issue_time` (`issue_id`, `created_at`),
+  CONSTRAINT `fk_comments_issue`
+    FOREIGN KEY (`issue_id`) REFERENCES `issues` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_comments_author`
+    FOREIGN KEY (`author_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='issue 评论';
 
 -- ------------------------------------------------------------
 -- 4. 看板元数据（用于记录示例数据是否已初始化，避免重复覆盖）
