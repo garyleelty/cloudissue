@@ -42,6 +42,9 @@ const transport = new StdioClientTransport({
   args: [ENTRY],
   cwd: ROOT,
   stderr: 'pipe',
+  // SDK 默认只继承 HOME/PATH 等白名单变量，DB_* 传不进去——CI 上没有 .env
+  // 文件兜底，子进程会因环境校验失败直接退出（Connection closed）。显式透传。
+  env: { ...process.env },
 });
 
 const client = new Client({ name: 'cloudissue-smoke', version: '1.0.0' });
