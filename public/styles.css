@@ -1658,6 +1658,89 @@ body:has(#batchBar:not([hidden])) .toast-root {
   white-space: pre-wrap;
 }
 
+/* markdown 渲染体（抽屉描述）；结构化内容不再需要 pre-wrap 保留换行 */
+.md-body {
+  white-space: normal;
+  word-break: break-word;
+}
+.md-body > :first-child {
+  margin-top: 0;
+}
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+.md-body p {
+  margin: 0 0 10px;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  margin: 14px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.md-body h1 {
+  font-size: 16px;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+.md-body li {
+  margin: 3px 0;
+}
+.md-body ul ul {
+  margin: 3px 0;
+}
+.md-body code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-sunken);
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+.md-body pre {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  overflow-x: auto;
+}
+.md-body pre code {
+  padding: 0;
+  background: none;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+.md-body blockquote {
+  margin: 0 0 10px;
+  padding: 6px 12px;
+  border-left: 3px solid var(--line-strong);
+  color: var(--text-3);
+}
+.md-body a {
+  color: var(--blue);
+  text-decoration: none;
+}
+.md-body a:hover {
+  text-decoration: underline;
+}
+.md-body hr {
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.md-body del {
+  color: var(--text-4);
+}
+
 .drawer-section {
   margin-top: 20px;
   padding-top: 14px;

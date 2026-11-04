@@ -8,6 +8,7 @@ import { api } from './api.js';
 import { toast } from './toast.js';
 import { esc, fmtDateTime, dueInfo } from './utils.js';
 import { myRole } from './boards.js';
+import { renderMarkdown } from '../../shared/markdown.js';
 import {
   STATUS_LABELS,
   PRIORITY_LABELS,
@@ -205,7 +206,9 @@ function render(issue, comments) {
         ${issue.tags.length ? `<div class="drawer-field"><span class="fm-label">标签</span><span class="drawer-tags">${issue.tags.map((t) => `<span class="chip tag"># ${esc(t)}</span>`).join('')}</span></div>` : ''}
       </section>
 
-      ${issue.description ? `<p class="drawer-desc">${esc(issue.description)}</p>` : ''}
+      ${
+        issue.description ? `<div class="drawer-desc md-body">${renderMarkdown(issue.description)}</div>` : ''
+      }
 
       <section class="drawer-section">
         <h3>评论 <span class="section-count">${comments.length}</span></h3>

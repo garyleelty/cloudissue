@@ -971,6 +971,114 @@ console.log('\n--- 看板成员与权限（前端入口收敛） ---');
   );
 }
 
+console.log('\n--- Markdown 描述渲染（受限渲染器 + XSS 防护） ---');
+{
+  const md = await import('../shared/markdown.js');
+
+  // 基础子集
+  check(
+    '段落渲染',
+    md.renderMarkdown('第一行\n第二行') === '<p>第一行<br>第二行</p>',
+    md.renderMarkdown('第一行\n第二行'),
+  );
+  check('标题渲染', md.renderMarkdown('## 标题') === '<h2>标题</h2>', md.renderMarkdown('## 标题'));
+  check(
+    '无序列表渲染',
+    md.renderMarkdown('- a\n- b') === '<ul><li>a</li><li>b</li></ul>',
+    md.renderMarkdown('- a\n- b'),
+  );
+  check(
+    '有序列表渲染',
+    md.renderMarkdown('1. a\n2. b') === '<ol><li>a</li><li>b</li></ol>',
+    md.renderMarkdown('1. a\n2. b'),
+  );
+  check(
+    '代码块渲染且内部不解析',
+    md.renderMarkdown('```js\n**not bold**\n```') === '<pre><code class="lang-js">**not bold**</code></pre>',
+    md.renderMarkdown('```js\n**not bold**\n```'),
+  );
+  check(
+    '粗体斜体删除线',
+    md.renderMarkdown('**b** *i* ~~s~~') === '<p><strong>b</strong> <em>i</em> <del>s</del></p>',
+  );
+  check(
+    '行内代码不被二次加工',
+    md.renderMarkdown('`**x**`') === '<p><code>**x**</code></p>',
+    md.renderMarkdown('`**x**`'),
+  );
+  check(
+    '引用渲染',
+    md.renderMarkdown('> 提示语') === '<blockquote>提示语</blockquote>',
+    md.renderMarkdown('> 提示语'),
+  );
+  check('分隔线渲染', md.renderMarkdown('---') === '<hr>');
+  check(
+    '链接渲染且带安全属性',
+    md.renderMarkdown('[官网](https://example.com)') ===
+      '<p><a href="https://example.com" target="_blank" rel="noopener noreferrer">官网</a></p>',
+    md.renderMarkdown('[官网](https://example.com)'),
+  );
+
+  // XSS 防护：先转义后解析，任何注入都变成字面文本
+  check(
+    'script 标签被转义为字面文本',
+    md.renderMarkdown('<script>alert(1)</script>') === '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>',
+    md.renderMarkdown('<script>alert(1)</script>'),
+  );
+  check(
+    'img onerror 被转义',
+    md.renderMarkdown('<img src=x onerror=alert(1)>').includes('&lt;img'),
+    md.renderMarkdown('<img src=x onerror=alert(1)>'),
+  );
+  check(
+    'javascript: 链接被拒绝（只留文字）',
+    md.renderMarkdown('[点我](javascript:alert(1))') === '<p>[点我](javascript:alert(1))</p>',
+    md.renderMarkdown('[点我](javascript:alert(1))'),
+  );
+  check('data: URL 同样被拒', md.renderMarkdown('[x](data:text/html,bad)').includes('<a') === false);
+  check(
+    '自动链接带 rel=noopener',
+    md
+      .renderMarkdown('访问 https://example.com 谢谢')
+      .includes('<a href="https://example.com" target="_blank" rel="noopener noreferrer">'),
+    md.renderMarkdown('访问 https://example.com 谢谢'),
+  );
+  check(
+    '链接文本里的 HTML 也被转义',
+    md.renderMarkdown('[<b>x</b>](https://e.com)').includes('&lt;b&gt;'),
+    md.renderMarkdown('[<b>x</b>](https://e.com)'),
+  );
+  check('空输入返回空串', md.renderMarkdown('') === '' && md.renderMarkdown(null) === '');
+
+  // 抽屉集成：markdown 描述渲染为结构化 HTML
+  const mdIssue = mkIssue(7, {
+    boardId: 1,
+    title: 'MD描述卡',
+    status: 'backlog',
+    position: 5,
+    description: '需求要点：\n- 支持**粗体**\n- 支持`代码`',
+  });
+  FIXTURE.push(mdIssue);
+  s.issues.push(mdIssue);
+  notify();
+  const mdCard = [...document.querySelectorAll('.card .card-open')].find((c) =>
+    c.textContent.includes('MD描述卡'),
+  );
+  mdCard.click();
+  await wait(150);
+  const descHtml = document.querySelector('#drawerRoot .drawer-desc')?.innerHTML || '';
+  check(
+    '抽屉描述按 markdown 渲染',
+    descHtml.includes('<ul>') &&
+      descHtml.includes('<strong>粗体</strong>') &&
+      descHtml.includes('<code>代码</code>'),
+    descHtml.slice(0, 160),
+  );
+  check('抽屉描述容器带 md-body 类', Boolean(document.querySelector('#drawerRoot .drawer-desc.md-body')));
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(50);
+}
+
 console.log('\n--- toast 去重 ---');
 {
   const toastMod = await import('../public/src/toast.js');
@@ -1097,10 +1205,11 @@ console.log('\n--- CSV 导出 ---');
     exportUrls.some((u) => u.includes('boardId=1') && u.includes('priority=high')),
     exportUrls.join(' | '),
   );
+  const expectCount = FIXTURE.filter((i) => i.boardId === 1).length;
   check(
     '导出成功 toast 带数量',
     document.querySelector('#toastRoot .toast')?.textContent ===
-      `已导出 5 个任务：cloudissue-默认看板-2026-11-05.csv`,
+      `已导出 ${expectCount} 个任务：cloudissue-默认看板-2026-11-05.csv`,
     document.querySelector('#toastRoot .toast')?.textContent,
   );
 
