@@ -48,11 +48,13 @@ function logItemHtml(log) {
   const fromLabel = log.fromStatus ? STATUS_LABELS[log.fromStatus] : '新建';
   const toLabel = STATUS_LABELS[log.toStatus] || log.toStatus;
   const reasonHtml = log.reason ? `<div class="log-reason">失败原因：${esc(log.reason)}</div>` : '';
+  // 操作者：人（用户名）与 AI（客户端自报身份）都在时间线里留名
+  const actorHtml = log.actor ? `<span class="log-actor">${esc(log.actor)}</span>` : '';
   return `
     <div class="log-item" data-to="${esc(log.toStatus)}">
       <span class="log-bar"></span>
       <div>
-        <div class="log-main">${esc(fromLabel)} → ${esc(toLabel)}</div>
+        <div class="log-main">${esc(fromLabel)} → ${esc(toLabel)} ${actorHtml}</div>
         <div class="log-at">${esc(fmtDateTime(log.changedAt))}</div>
         ${reasonHtml}
       </div>

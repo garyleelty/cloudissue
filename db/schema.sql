@@ -55,10 +55,25 @@ CREATE TABLE IF NOT EXISTS `users` (
   `display_name`  VARCHAR(64)     NOT NULL DEFAULT ''     COMMENT '展示名',
   `password_hash` VARCHAR(255)    NOT NULL                COMMENT 'bcrypt 哈希',
   `token_version` INT UNSIGNED    NOT NULL DEFAULT 0      COMMENT 'JWT 吊销版本号',
+  `api_token`     VARCHAR(64)     NULL                    COMMENT '个人 API Token（Bearer），供 AI/MCP 客户端使用',
   `created_at`    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_users_username` (`username`)
+  UNIQUE KEY `uk_users_username` (`username`),
+  UNIQUE KEY `uk_users_api_token` (`api_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户';
+
+-- 幂等补列：历史库的 users 表缺 `api_token` 时自动补上（同 issues.version 的做法）
+SET @ci_ddl := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'users'
+       AND COLUMN_NAME = 'api_token') = 0,
+  'ALTER TABLE `users` ADD COLUMN `api_token` VARCHAR(64) NULL COMMENT ''个人 API Token（Bearer），供 AI/MCP 客户端使用'' AFTER `token_version`, ADD UNIQUE KEY `uk_users_api_token` (`api_token`)',
+  'DO 0'
+);
+PREPARE ci_stmt FROM @ci_ddl;
+EXECUTE ci_stmt;
+DEALLOCATE PREPARE ci_stmt;
 
 -- ------------------------------------------------------------
 -- 2. 标签表（一个任务可有多个标签）
@@ -81,12 +96,26 @@ CREATE TABLE IF NOT EXISTS `issue_status_logs` (
   `from_status` VARCHAR(16)     NOT NULL DEFAULT '' COMMENT '原状态；空字符串表示新建',
   `to_status`   VARCHAR(16)     NOT NULL            COMMENT '新状态',
   `reason`      TEXT            NULL                COMMENT '失败原因，仅当 to_status=failed 时必填',
+  `actor`       VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '操作者（人=用户名，AI=客户端自报）；空表示系统或历史数据',
   `changed_at`  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '变更时间',
   PRIMARY KEY (`id`),
   KEY `idx_logs_issue_time` (`issue_id`, `changed_at`),
   CONSTRAINT `fk_status_logs_issue`
     FOREIGN KEY (`issue_id`) REFERENCES `issues` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='状态变更记录';
+
+-- 幂等补列：历史库的 issue_status_logs 缺 `actor` 时自动补上
+SET @ci_ddl := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'issue_status_logs'
+       AND COLUMN_NAME = 'actor') = 0,
+  'ALTER TABLE `issue_status_logs` ADD COLUMN `actor` VARCHAR(64) NOT NULL DEFAULT '''' COMMENT ''操作者（人=用户名，AI=客户端自报）；空表示系统或历史数据'' AFTER `reason`',
+  'DO 0'
+);
+PREPARE ci_stmt FROM @ci_ddl;
+EXECUTE ci_stmt;
+DEALLOCATE PREPARE ci_stmt;
 
 -- ------------------------------------------------------------
 -- 4. 看板元数据（用于记录示例数据是否已初始化，避免重复覆盖）

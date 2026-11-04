@@ -1318,3 +1318,16 @@ body:has(#batchBar:not([hidden])) .toast-root {
 #authForm .form-error {
   margin: 2px 0 12px;
 }
+
+/* 变更记录里的操作者标记（人 / AI 均留名） */
+.log-actor {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-sunken);
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 600;
+  vertical-align: 1px;
+}

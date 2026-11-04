@@ -84,7 +84,7 @@ cloudissue/
 Express HTTP 层 (server/index.js)      ← 路由 / 鉴权 / 限流 / 静态资源，持有 MCP Client
    │  MCP over stdio（断连自动重连）
    ▼
-MCP 数据服务 (mcp-server/index.js)     ← 唯一持有 MySQL 连接池，暴露 12 个 tools
+MCP 数据服务 (mcp-server/index.js)     ← 唯一持有 MySQL 连接池，暴露 15 个 tools
    │  mysql2
    ▼
 MySQL 8 (issue_board)
@@ -415,6 +415,59 @@ npx @modelcontextprotocol/inspector node mcp-server/index.js
 
 ---
 
+## 九·五、AI 接入（MCP over HTTP）
+
+看板为「人 + AI 共用」设计：**人走 Web UI（cookie 会话），AI 走 `/mcp`（API Token）**，
+两条入口落到同一套 MCP tools 与同一块 MySQL，业务校验完全同源。
+
+### 连接方式
+
+登录后在 `GET /api/auth/token` 取个人 Token（形如 `ci_…`），在任意支持
+Streamable HTTP 的 MCP 客户端中配置：
+
+```json
+{
+  "mcpServers": {
+    "cloudissue": {
+      "type": "http",
+      "url": "http://localhost:5173/mcp",
+      "headers": { "Authorization": "Bearer ci_xxxxxx…" }
+    }
+  }
+}
+```
+
+### 给 AI 的 tools（15 个）
+
+| 类别     | Tools                                                                          | 说明                                                   |
+| -------- | ------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| 概览     | `board_summary`                                                                | **一次调用看懂看板**：列计数、逾期、今日到期、最近变更 |
+| 任务     | `issue_list` / `issue_create` / `issue_update` / `issue_move` / `issue_delete` | 与 Web 完全同源的业务校验（失败原因必填、乐观锁 409）  |
+| 系统     | `db_health` / `board_bootstrap`                                                | 健康检查 / 建库建表                                    |
+| 用户内部 | `user_*`（7 个）                                                               | 供 HTTP 层认证使用，AI 客户端一般无需直接调用          |
+
+### 人机协作约定
+
+- **AI 留名**：写操作接受可选 `actor` 参数，会显示在 Web 时间线的操作者徽标上；
+  建议 AI 客户端自报身份（如 `ai:my-agent`），Web 端的操作自动记录登录用户名。
+- **先读后写**：AI 应先调 `board_summary`（紧凑、含下一步建议）再按需 `issue_list`，
+  避免一次性拉全量明细。
+- **乐观锁**：并发场景下把读到的 `version` 作为 `expectedVersion` 传回，
+  被人抢先修改会得到 409 冲突而不是静默覆盖。
+- **Token 卫生**：`POST /api/auth/token/rotate` 可随时轮换（旧 Token 立即失效）；
+  改密不影响 API Token，两者独立吊销。
+
+```bash
+# 快速自检：用 curl 走一遍 MCP 握手
+curl -X POST http://localhost:5173/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+---
+
 ## 十、实现要点与边界处理
 
 1. **失败原因双重校验**：前端拖拽时弹窗拦截；MCP tool 服务端二次校验，任一环节缺失都会拒绝并提示。
@@ -444,8 +497,8 @@ npx @modelcontextprotocol/inspector node mcp-server/index.js
 
 ```bash
 npm run lint       # ESLint 检查
-npm run test:mcp   # MCP 链路冒烟：验证 stdio 传输正常、12 个 tools 全部注册（不需服务）
-npm test           # 端到端集成测试：覆盖全链路、业务规则与认证（81 项断言，需先起服务）
+npm run test:mcp   # MCP 链路冒烟：验证 stdio 传输正常、15 个 tools 全部注册（不需服务）
+npm test           # 端到端集成测试：全链路、业务规则、认证与 AI 接入（94 项断言，需先起服务）
 npm run test:ui    # UI 冒烟（jsdom，74 项断言，不需服务与数据库）
 ```
 

@@ -17,6 +17,7 @@ import jwt from 'jsonwebtoken';
 import { Router } from 'express';
 import { z } from 'zod';
 import { callTool } from './mcp-client.js';
+import { generateApiToken } from './mcp-http.js';
 import { logger } from './logger.js';
 
 // 本模块的 env 校验在 import 阶段执行（早于 index.js 的模块体），
@@ -110,7 +111,8 @@ authRouter.post('/register', async (req, res, next) => {
     if (existing) return res.status(400).json({ error: '用户名已被占用' });
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const { id } = await callTool('user_create', { username, displayName, passwordHash });
+    const apiToken = generateApiToken();
+    const { id } = await callTool('user_create', { username, displayName, passwordHash, apiToken });
 
     const { user } = await callTool('user_get_by_id', { id });
     setSessionCookie(res, user);
@@ -149,6 +151,35 @@ authRouter.post('/logout', (req, res) => {
 /** 当前会话用户（前端启动时探测登录态） */
 authRouter.get('/me', authRequired, (req, res) => {
   res.json({ user: req.user });
+});
+
+/**
+ * 查看 API Token（AI/MCP 客户端接入凭据）。历史用户可能尚无 token，
+ * 查看时惰性生成，避免额外的迁移脚本。
+ */
+authRouter.get('/token', authRequired, async (req, res, next) => {
+  try {
+    const { user } = await callTool('user_get_by_id', { id: req.user.id });
+    if (!user) return res.status(401).json({ error: '登录状态已失效，请重新登录' });
+    if (user.apiToken) return res.json({ token: user.apiToken });
+
+    const token = generateApiToken();
+    await callTool('user_set_api_token', { id: user.id, apiToken: token });
+    res.json({ token });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** 轮换 API Token：旧 token 立即作废（怀疑泄露或人员变动时使用） */
+authRouter.post('/token/rotate', authRequired, async (req, res, next) => {
+  try {
+    const token = generateApiToken();
+    await callTool('user_set_api_token', { id: req.user.id, apiToken: token });
+    res.json({ token });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /** 改密：校验旧密码 → 写新哈希 → bump token_version → 重新发 cookie */

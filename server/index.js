@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { logger } from './logger.js';
 import { callTool, closeMcp } from './mcp-client.js';
 import { authRouter, authRequired } from './auth.js';
+import { mcpHttpRouter, authByToken } from './mcp-http.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(here, '..');
@@ -99,6 +100,9 @@ const authLimiter = rateLimit({
 app.use('/api', apiLimiter);
 app.use('/api/auth', authLimiter, authRouter);
 
+// AI/MCP 客户端入口：Bearer API Token 认证 + 无状态 Streamable HTTP
+app.use('/mcp', apiLimiter, authByToken, mcpHttpRouter);
+
 // 业务接口一律先过鉴权（/api/health 保持公开，供容器 healthcheck）
 app.use('/api/issues', authRequired);
 
@@ -126,7 +130,11 @@ app.get(
 app.post(
   '/api/issues',
   asyncHandler(async (req, res) => {
-    const data = await callTool('issue_create', req.body || {});
+    // actor 记录操作者：人在时间线里能看到是谁（含 AI 客户端自报身份）做的变更
+    const data = await callTool('issue_create', {
+      ...(req.body || {}),
+      actor: req.user.username,
+    });
     res.status(201).json(data);
   }),
 );
@@ -148,7 +156,11 @@ app.put(
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ error: '非法的任务 ID' });
     }
-    const data = await callTool('issue_update', { ...(req.body || {}), id });
+    const data = await callTool('issue_update', {
+      ...(req.body || {}),
+      id,
+      actor: req.user.username,
+    });
     if (data.conflict) return conflictResponse(res, data);
     res.json(data);
   }),
@@ -227,6 +239,7 @@ app.post(
           afterId,
           failReason: failReason ?? '',
           expectedVersion,
+          actor: req.user.username,
         });
         // 冲突不是异常：MCP 以正常结果返回 conflict，需单独归入 failed
         if (data.conflict) {
@@ -280,7 +293,11 @@ app.post(
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ error: '非法的任务 ID' });
     }
-    const data = await callTool('issue_move', { ...(req.body || {}), id });
+    const data = await callTool('issue_move', {
+      ...(req.body || {}),
+      id,
+      actor: req.user.username,
+    });
     if (data.conflict) return conflictResponse(res, data);
     res.json(data);
   }),

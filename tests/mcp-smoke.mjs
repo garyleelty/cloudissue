@@ -1,6 +1,6 @@
 /**
  * MCP 链路冒烟测试：验证 MCP Client 能通过 stdio 连上 MCP Server，
- * 并且 7 个 tools 均已正确注册（含 zod schema 校验通过）。
+ * 并且全部 tools 均已正确注册（含 zod schema 校验通过）。
  * 该测试不依赖 MySQL 数据，只验证「传输 + 工具注册」这一段。
  */
 import path from 'node:path';
@@ -13,13 +13,23 @@ const ROOT = path.resolve(here, '..');
 const ENTRY = path.join(ROOT, 'mcp-server', 'index.js');
 
 const EXPECTED = [
+  // 看板
   'db_health',
   'board_bootstrap',
   'issue_list',
+  'board_summary',
   'issue_create',
   'issue_update',
   'issue_move',
   'issue_delete',
+  // 用户与认证
+  'user_create',
+  'user_get_by_username',
+  'user_get_by_token',
+  'user_get_by_id',
+  'user_bump_token_version',
+  'user_update_auth',
+  'user_set_api_token',
 ];
 
 const transport = new StdioClientTransport({
@@ -35,21 +45,26 @@ await client.connect(transport);
 const { tools } = await client.listTools();
 const names = tools.map((t) => t.name);
 
-console.log('已注册 tools:', names.join(', '));
+console.log(`已注册 tools（${names.length} 个）:`, names.join(', '));
 
 const missing = EXPECTED.filter((n) => !names.includes(n));
 if (missing.length) {
   console.error('缺少 tools:', missing.join(', '));
   process.exitCode = 1;
 } else {
-  console.log('OK: 全部 7 个 tools 注册正常');
+  console.log(`OK: 全部 ${EXPECTED.length} 个 tools 注册正常`);
 }
 
-// 校验 issue_move 的入参 schema 已生成
+// 校验 issue_move 的入参 schema 已生成（含乐观锁与 actor）
 const move = tools.find((t) => t.name === 'issue_move');
 const props = Object.keys(move?.inputSchema?.properties ?? {});
 console.log('issue_move 入参:', props.join(', '));
-if (!props.includes('toStatus') || !props.includes('afterId') || !props.includes('failReason')) {
+if (
+  !props.includes('toStatus') ||
+  !props.includes('afterId') ||
+  !props.includes('failReason') ||
+  !props.includes('actor')
+) {
   console.error('issue_move 入参 schema 不完整');
   process.exitCode = 1;
 }

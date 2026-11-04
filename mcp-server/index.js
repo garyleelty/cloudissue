@@ -6,17 +6,23 @@
  * HTTP 层（server/index.js）不允许直连数据库，所有读写都必须通过
  * 这里暴露的 MCP tools 完成，从而满足「数据读写通过 MCP 能力完成」。
  *
- * 传输方式：stdio（标准 MCP 传输协议）
- * 启动方式：node mcp-server/index.js
- * 调试方式：npx @modelcontextprotocol/inspector node mcp-server/index.js
+ * 同一套 tools 有两个传输入口：
+ *   · stdio（默认）—— HTTP 层内部拉起的子进程；
+ *   · Streamable HTTP —— 由 server/mcp-http.js 导入 createBoardServer()，
+ *     挂载在 /mcp 供外部 AI 客户端连接。
+ *
+ * 直接运行：node mcp-server/index.js（stdio 模式）
+ * 调试：npx @modelcontextprotocol/inspector node mcp-server/index.js
  */
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import { pool, query, withTransaction, runSchema, ensureDatabase, closeDb } from './db.js';
-import { STATUSES, PRIORITIES, FAIL_STATUS } from '../shared/constants.js';
+import { STATUSES, STATUS_LABELS, PRIORITIES, FAIL_STATUS } from '../shared/constants.js';
 
 // ------------------------------------------------------------------
 // 工具函数
@@ -80,7 +86,7 @@ async function fetchBoard(conn = pool) {
     ids,
   );
   const [logRows] = await conn.query(
-    `SELECT id, issue_id, from_status, to_status, reason, changed_at
+    `SELECT id, issue_id, from_status, to_status, reason, actor, changed_at
        FROM issue_status_logs WHERE issue_id IN (${placeholders})
       ORDER BY changed_at ASC, id ASC`,
     ids,
@@ -99,6 +105,7 @@ async function fetchBoard(conn = pool) {
       fromStatus: r.from_status,
       toStatus: r.to_status,
       reason: r.reason || '',
+      actor: r.actor || '',
       changedAt: toIsoStr(r.changed_at),
     });
   }
@@ -115,7 +122,7 @@ async function fetchIssueById(id, conn = pool) {
   if (!issue) return null;
   const [tagRows] = await conn.query('SELECT tag FROM issue_tags WHERE issue_id = ? ORDER BY tag ASC', [id]);
   const [logRows] = await conn.query(
-    `SELECT id, from_status, to_status, reason, changed_at
+    `SELECT id, from_status, to_status, reason, actor, changed_at
        FROM issue_status_logs WHERE issue_id = ?
       ORDER BY changed_at ASC, id ASC`,
     [id],
@@ -128,6 +135,7 @@ async function fetchIssueById(id, conn = pool) {
       fromStatus: r.from_status,
       toStatus: r.to_status,
       reason: r.reason || '',
+      actor: r.actor || '',
       changedAt: toIsoStr(r.changed_at),
     })),
   );
@@ -284,443 +292,547 @@ async function seedIfEmpty(conn) {
 // ------------------------------------------------------------------
 // MCP Server
 // ------------------------------------------------------------------
-const server = new McpServer({
-  name: 'cloudissue-data',
-  version: '1.0.0',
-});
-
-const ok = (data) => ({
-  content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-});
-
-const StatusEnum = z.enum(STATUSES);
-const PriorityEnum = z.enum(PRIORITIES);
-
 /**
- * 乐观锁：客户端把「自己看到的那份版本号」带回来，服务端比对不一致即判冲突。
- * 只在调用方显式传入 expectedVersion 时生效，老客户端不受影响。
+ * 构建看板 MCP Server 实例。
+ * 两个入口复用同一套 tools：
+ *   · stdio —— HTTP 层内部拉起的子进程（server/index.js 的 MCP Client）；
+ *   · Streamable HTTP —— 对外暴露给 AI 客户端（server/mcp-http.js 挂载在 /mcp）。
  */
-const ExpectedVersion = z
-  .number()
-  .int()
-  .nonnegative()
-  .optional()
-  .describe('客户端持有的版本号；与库中不一致则判定为冲突');
+export function createBoardServer() {
+  const server = new McpServer({
+    name: 'cloudissue-data',
+    version: '1.0.0',
+  });
 
-/** 冲突提示文案（前端直接展示） */
-const conflictMessage = (current, expected) =>
-  `任务已被其他人修改（当前版本 v${current}，你的版本 v${expected}），请刷新后重试`;
+  const ok = (data) => ({
+    content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+  });
 
-// 1) 健康检查
-server.registerTool('db_health', { description: '检查 MySQL 连接是否可用' }, async () => {
-  const [rows] = await query('SELECT DATABASE() AS db, NOW() AS now_ts');
-  return ok({ connected: true, ...rows[0], nowTs: toIsoStr(rows[0].now_ts) });
-});
+  const StatusEnum = z.enum(STATUSES);
+  const PriorityEnum = z.enum(PRIORITIES);
 
-// 2) 建表 + 按需初始化示例数据
-server.registerTool(
-  'board_bootstrap',
-  {
-    description: '执行建表脚本；仅当任务表为空时写入覆盖五列与三档优先级的示例任务',
-  },
-  async () => {
-    await ensureDatabase();
-    await runSchema();
-    const seed = await withTransaction(seedIfEmpty);
-    return ok({ schemaReady: true, ...seed });
-  },
-);
+  /**
+   * 乐观锁：客户端把「自己看到的那份版本号」带回来，服务端比对不一致即判冲突。
+   * 只在调用方显式传入 expectedVersion 时生效，老客户端不受影响。
+   */
+  const ExpectedVersion = z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe('客户端持有的版本号；与库中不一致则判定为冲突');
 
-// 3) 读取整块看板
-server.registerTool('issue_list', { description: '返回全部任务（含标签与状态变更记录）' }, async () =>
-  ok({ issues: await fetchBoard() }),
-);
+  /** 冲突提示文案（前端直接展示） */
+  const conflictMessage = (current, expected) =>
+    `任务已被其他人修改（当前版本 v${current}，你的版本 v${expected}），请刷新后重试`;
 
-// 4) 新建任务
-server.registerTool(
-  'issue_create',
-  {
-    description: '新建一个任务卡片',
-    inputSchema: {
-      title: z.string().min(1, '标题不能为空').max(255),
-      description: z.string().max(5000).optional().default(''),
-      priority: PriorityEnum.optional().default('medium'),
-      assignee: z.string().max(64).optional().default(''),
-      tags: z
-        .union([z.array(z.string()), z.string()])
-        .optional()
-        .default([]),
-      dueDate: z.string().nullable().optional(),
-      status: StatusEnum.optional().default('backlog'),
-      failReason: z.string().optional().default(''),
+  // 1) 健康检查
+  server.registerTool('db_health', { description: '检查 MySQL 连接是否可用' }, async () => {
+    const [rows] = await query('SELECT DATABASE() AS db, NOW() AS now_ts');
+    return ok({ connected: true, ...rows[0], nowTs: toIsoStr(rows[0].now_ts) });
+  });
+
+  // 2) 建表 + 按需初始化示例数据
+  server.registerTool(
+    'board_bootstrap',
+    {
+      description: '执行建表脚本；仅当任务表为空时写入覆盖五列与三档优先级的示例任务',
     },
-  },
-  async (args) => {
-    const status = args.status ?? 'backlog';
-    if (status === FAIL_STATUS && !String(args.failReason || '').trim()) {
-      throw bizError('创建到「失败」列的任务必须填写失败原因');
-    }
-
-    const issue = await withTransaction(async (conn) => {
-      const [[{ next }]] = await conn.query(
-        'SELECT COALESCE(MAX(position) + 1, 0) AS next FROM issues WHERE status = ?',
-        [status],
-      );
-      const [res] = await conn.query(
-        `INSERT INTO issues (title, description, priority, assignee, due_date, status, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          args.title.trim(),
-          args.description || '',
-          args.priority ?? 'medium',
-          args.assignee || '',
-          toDateStr(args.dueDate) || null,
-          status,
-          Number(next),
-        ],
-      );
-      const id = res.insertId;
-
-      for (const tag of normalizeTags(args.tags)) {
-        await conn.query('INSERT INTO issue_tags (issue_id, tag) VALUES (?, ?)', [id, tag]);
-      }
-      await conn.query(
-        `INSERT INTO issue_status_logs (issue_id, from_status, to_status, reason)
-         VALUES (?, '', ?, ?)`,
-        [id, status, status === FAIL_STATUS ? String(args.failReason).trim() : null],
-      );
-      return id;
-    });
-
-    const [rows] = await pool.query('SELECT * FROM issues WHERE id = ?', [issue]);
-    return ok({ created: true, id: issue, issue: (await fetchIssueById(issue)) ?? rows[0] });
-  },
-);
-
-// 5) 更新任务字段
-server.registerTool(
-  'issue_update',
-  {
-    description: '更新任务的标题、描述、优先级、负责人、标签、截止日期等字段',
-    inputSchema: {
-      id: z.number().int().positive(),
-      title: z.string().min(1).max(255).optional(),
-      description: z.string().max(5000).optional(),
-      priority: PriorityEnum.optional(),
-      assignee: z.string().max(64).optional(),
-      tags: z.union([z.array(z.string()), z.string()]).optional(),
-      dueDate: z.string().nullable().optional(),
-      status: StatusEnum.optional(),
-      failReason: z.string().optional(),
-      expectedVersion: ExpectedVersion,
+    async () => {
+      await ensureDatabase();
+      await runSchema();
+      const seed = await withTransaction(seedIfEmpty);
+      return ok({ schemaReady: true, ...seed });
     },
-  },
-  async (args) => {
-    const updated = await withTransaction(async (conn) => {
-      const [[row]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
-      if (!row) throw bizError('任务不存在或已被删除');
+  );
 
-      // 乐观并发闸门：别人已经改过这条任务，拒绝本次提交而不是静默覆盖
-      if (args.expectedVersion != null && Number(row.version) !== args.expectedVersion) {
-        return {
-          conflict: true,
-          currentVersion: Number(row.version),
-          expectedVersion: args.expectedVersion,
-        };
+  // 3) 读取整块看板
+  server.registerTool('issue_list', { description: '返回全部任务（含标签与状态变更记录）' }, async () =>
+    ok({ issues: await fetchBoard() }),
+  );
+
+  // 4) 新建任务
+  server.registerTool(
+    'issue_create',
+    {
+      description: '新建一个任务卡片',
+      inputSchema: {
+        title: z.string().min(1, '标题不能为空').max(255),
+        description: z.string().max(5000).optional().default(''),
+        priority: PriorityEnum.optional().default('medium'),
+        assignee: z.string().max(64).optional().default(''),
+        tags: z
+          .union([z.array(z.string()), z.string()])
+          .optional()
+          .default([]),
+        dueDate: z.string().nullable().optional(),
+        status: StatusEnum.optional().default('backlog'),
+        failReason: z.string().optional().default(''),
+        actor: z.string().max(64).optional().default(''),
+      },
+    },
+    async (args) => {
+      const status = args.status ?? 'backlog';
+      if (status === FAIL_STATUS && !String(args.failReason || '').trim()) {
+        throw bizError('创建到「失败」列的任务必须填写失败原因');
       }
 
-      const nextStatus = args.status ?? row.status;
-      const statusChanged = nextStatus !== row.status;
+      const issue = await withTransaction(async (conn) => {
+        const [[{ next }]] = await conn.query(
+          'SELECT COALESCE(MAX(position) + 1, 0) AS next FROM issues WHERE status = ?',
+          [status],
+        );
+        const [res] = await conn.query(
+          `INSERT INTO issues (title, description, priority, assignee, due_date, status, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            args.title.trim(),
+            args.description || '',
+            args.priority ?? 'medium',
+            args.assignee || '',
+            toDateStr(args.dueDate) || null,
+            status,
+            Number(next),
+          ],
+        );
+        const id = res.insertId;
 
-      if (nextStatus === FAIL_STATUS && statusChanged) {
-        const reason = String(args.failReason || '').trim();
-        if (!reason) throw bizError('变更为「失败」状态必须填写失败原因');
-      }
-
-      const patch = {
-        title: args.title !== undefined ? args.title.trim() : row.title,
-        description: args.description !== undefined ? args.description : row.description,
-        priority: args.priority ?? row.priority,
-        assignee: args.assignee !== undefined ? args.assignee : row.assignee,
-        due_date: args.dueDate !== undefined ? toDateStr(args.dueDate) : row.due_date,
-        status: nextStatus,
-      };
-
-      await conn.query(
-        `UPDATE issues
-            SET title = ?, description = ?, priority = ?, assignee = ?, due_date = ?, status = ?,
-                version = version + 1
-          WHERE id = ?`,
-        [
-          patch.title,
-          patch.description,
-          patch.priority,
-          patch.assignee,
-          patch.due_date,
-          patch.status,
-          args.id,
-        ],
-      );
-
-      if (args.tags !== undefined) {
-        await conn.query('DELETE FROM issue_tags WHERE issue_id = ?', [args.id]);
         for (const tag of normalizeTags(args.tags)) {
-          await conn.query('INSERT INTO issue_tags (issue_id, tag) VALUES (?, ?)', [args.id, tag]);
+          await conn.query('INSERT INTO issue_tags (issue_id, tag) VALUES (?, ?)', [id, tag]);
         }
-      }
-
-      if (statusChanged) {
         await conn.query(
-          `INSERT INTO issue_status_logs (issue_id, from_status, to_status, reason)
-           VALUES (?, ?, ?, ?)`,
-          [
-            args.id,
-            row.status,
-            nextStatus,
-            nextStatus === FAIL_STATUS ? String(args.failReason || '').trim() : null,
-          ],
+          `INSERT INTO issue_status_logs (issue_id, from_status, to_status, reason, actor)
+           VALUES (?, '', ?, ?, ?)`,
+          [id, status, status === FAIL_STATUS ? String(args.failReason).trim() : null, args.actor],
         );
-      }
-      return { updated: true };
-    });
-
-    if (updated.conflict) {
-      return ok({
-        conflict: true,
-        message: conflictMessage(updated.currentVersion, updated.expectedVersion),
-        currentVersion: updated.currentVersion,
-        issue: await fetchIssueById(args.id),
+        return id;
       });
-    }
 
-    return ok({ updated: true, issue: await fetchIssueById(args.id) });
-  },
-);
-
-// 6) 移动 / 排序（跨列拖拽的核心）
-server.registerTool(
-  'issue_move',
-  {
-    description: '把任务移动到目标状态列的指定位置；跨列时自动写入状态变更记录',
-    inputSchema: {
-      id: z.number().int().positive(),
-      toStatus: StatusEnum,
-      afterId: z
-        .number()
-        .int()
-        .positive()
-        .nullable()
-        .optional()
-        .describe('插入到该任务之后；为空表示插到列首'),
-      failReason: z.string().optional().default(''),
-      expectedVersion: ExpectedVersion,
+      const [rows] = await pool.query('SELECT * FROM issues WHERE id = ?', [issue]);
+      return ok({ created: true, id: issue, issue: (await fetchIssueById(issue)) ?? rows[0] });
     },
-  },
-  async (args) => {
-    const result = await withTransaction(async (conn) => {
-      const [[issue]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
-      if (!issue) throw bizError('任务不存在或已被删除');
+  );
 
-      // 两人同时拖同一张卡时，后提交者被告知冲突，而不是覆盖掉前一次移动
-      if (args.expectedVersion != null && Number(issue.version) !== args.expectedVersion) {
-        return {
-          conflict: true,
-          currentVersion: Number(issue.version),
-          expectedVersion: args.expectedVersion,
+  // 5) 更新任务字段
+  server.registerTool(
+    'issue_update',
+    {
+      description: '更新任务的标题、描述、优先级、负责人、标签、截止日期等字段',
+      inputSchema: {
+        id: z.number().int().positive(),
+        title: z.string().min(1).max(255).optional(),
+        description: z.string().max(5000).optional(),
+        priority: PriorityEnum.optional(),
+        assignee: z.string().max(64).optional(),
+        tags: z.union([z.array(z.string()), z.string()]).optional(),
+        dueDate: z.string().nullable().optional(),
+        status: StatusEnum.optional(),
+        failReason: z.string().optional(),
+        expectedVersion: ExpectedVersion,
+        actor: z.string().max(64).optional().default(''),
+      },
+    },
+    async (args) => {
+      const updated = await withTransaction(async (conn) => {
+        const [[row]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
+        if (!row) throw bizError('任务不存在或已被删除');
+
+        // 乐观并发闸门：别人已经改过这条任务，拒绝本次提交而不是静默覆盖
+        if (args.expectedVersion != null && Number(row.version) !== args.expectedVersion) {
+          return {
+            conflict: true,
+            currentVersion: Number(row.version),
+            expectedVersion: args.expectedVersion,
+          };
+        }
+
+        const nextStatus = args.status ?? row.status;
+        const statusChanged = nextStatus !== row.status;
+
+        if (nextStatus === FAIL_STATUS && statusChanged) {
+          const reason = String(args.failReason || '').trim();
+          if (!reason) throw bizError('变更为「失败」状态必须填写失败原因');
+        }
+
+        const patch = {
+          title: args.title !== undefined ? args.title.trim() : row.title,
+          description: args.description !== undefined ? args.description : row.description,
+          priority: args.priority ?? row.priority,
+          assignee: args.assignee !== undefined ? args.assignee : row.assignee,
+          due_date: args.dueDate !== undefined ? toDateStr(args.dueDate) : row.due_date,
+          status: nextStatus,
         };
-      }
 
-      const fromStatus = issue.status;
-      const statusChanged = fromStatus !== args.toStatus;
-
-      // 关键校验：进入「失败」列必须填写失败原因
-      if (statusChanged && args.toStatus === FAIL_STATUS) {
-        const reason = String(args.failReason || '').trim();
-        if (!reason) throw bizError('移动到「失败」列前必须填写失败原因');
-      }
-
-      const [rows] = await conn.query(
-        'SELECT id FROM issues WHERE status = ? ORDER BY position ASC, id ASC',
-        [args.toStatus],
-      );
-      const ids = rows.map((r) => r.id).filter((x) => x !== args.id);
-
-      let index = 0;
-      if (args.afterId) {
-        const found = ids.indexOf(args.afterId);
-        index = found >= 0 ? found + 1 : ids.length;
-      }
-      ids.splice(index, 0, args.id);
-
-      // 重新编号，保证 position 连续稳定。
-      // 这里刻意不动 version：同列其他卡片只是被重排，版本号应保持稳定，
-      // 否则任何一次排序都会让全列卡片的乐观锁集体失效。
-      for (let i = 0; i < ids.length; i += 1) {
-        await conn.query('UPDATE issues SET status = ?, position = ? WHERE id = ?', [
-          args.toStatus,
-          i,
-          ids[i],
-        ]);
-      }
-
-      // 只有被移动的这张卡版本号 +1
-      const nextVersion = Number(issue.version) + 1;
-      await conn.query('UPDATE issues SET version = ? WHERE id = ?', [nextVersion, args.id]);
-
-      if (statusChanged) {
         await conn.query(
-          `INSERT INTO issue_status_logs (issue_id, from_status, to_status, reason)
-           VALUES (?, ?, ?, ?)`,
+          `UPDATE issues
+              SET title = ?, description = ?, priority = ?, assignee = ?, due_date = ?, status = ?,
+                  version = version + 1
+            WHERE id = ?`,
           [
+            patch.title,
+            patch.description,
+            patch.priority,
+            patch.assignee,
+            patch.due_date,
+            patch.status,
             args.id,
-            fromStatus,
-            args.toStatus,
-            args.toStatus === FAIL_STATUS ? String(args.failReason).trim() : null,
           ],
         );
-      }
-      return { fromStatus, toStatus: args.toStatus, statusChanged, version: nextVersion };
-    });
 
-    if (result.conflict) {
-      return ok({
-        conflict: true,
-        message: conflictMessage(result.currentVersion, result.expectedVersion),
-        currentVersion: result.currentVersion,
-        issue: await fetchIssueById(args.id),
+        if (args.tags !== undefined) {
+          await conn.query('DELETE FROM issue_tags WHERE issue_id = ?', [args.id]);
+          for (const tag of normalizeTags(args.tags)) {
+            await conn.query('INSERT INTO issue_tags (issue_id, tag) VALUES (?, ?)', [args.id, tag]);
+          }
+        }
+
+        if (statusChanged) {
+          await conn.query(
+            `INSERT INTO issue_status_logs (issue_id, from_status, to_status, reason, actor)
+             VALUES (?, ?, ?, ?, ?)`,
+            [
+              args.id,
+              row.status,
+              nextStatus,
+              nextStatus === FAIL_STATUS ? String(args.failReason || '').trim() : null,
+              args.actor,
+            ],
+          );
+        }
+        return { updated: true };
       });
-    }
 
-    return ok({ moved: true, ...result });
-  },
-);
+      if (updated.conflict) {
+        return ok({
+          conflict: true,
+          message: conflictMessage(updated.currentVersion, updated.expectedVersion),
+          currentVersion: updated.currentVersion,
+          issue: await fetchIssueById(args.id),
+        });
+      }
 
-// 7) 删除任务
-server.registerTool(
-  'issue_delete',
-  {
-    description: '删除一个任务（标签与变更记录通过外键级联删除）',
-    inputSchema: { id: z.number().int().positive() },
-  },
-  async (args) => {
-    const [res] = await query('DELETE FROM issues WHERE id = ?', [args.id]);
-    if (!res.affectedRows) throw bizError('任务不存在或已被删除');
-    return ok({ deleted: true, id: args.id });
-  },
-);
+      return ok({ updated: true, issue: await fetchIssueById(args.id) });
+    },
+  );
 
-// ------------------------------------------------------------------
-// 用户（认证身份）。口令哈希在 HTTP 层完成，这里只负责存取。
-// ------------------------------------------------------------------
+  // 6) 移动 / 排序（跨列拖拽的核心）
+  server.registerTool(
+    'issue_move',
+    {
+      description: '把任务移动到目标状态列的指定位置；跨列时自动写入状态变更记录',
+      inputSchema: {
+        id: z.number().int().positive(),
+        toStatus: StatusEnum,
+        afterId: z
+          .number()
+          .int()
+          .positive()
+          .nullable()
+          .optional()
+          .describe('插入到该任务之后；为空表示插到列首'),
+        failReason: z.string().optional().default(''),
+        expectedVersion: ExpectedVersion,
+        actor: z.string().max(64).optional().default(''),
+      },
+    },
+    async (args) => {
+      const result = await withTransaction(async (conn) => {
+        const [[issue]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
+        if (!issue) throw bizError('任务不存在或已被删除');
 
-/** users 行 → 对外 JSON（含 password_hash，仅供 HTTP 层校验，不出 HTTP↔MCP 边界） */
-function shapeUser(u) {
-  return {
-    id: u.id,
-    username: u.username,
-    displayName: u.display_name || '',
-    passwordHash: u.password_hash,
-    tokenVersion: Number(u.token_version ?? 0),
-    createdAt: toIsoStr(u.created_at),
-  };
+        // 两人同时拖同一张卡时，后提交者被告知冲突，而不是覆盖掉前一次移动
+        if (args.expectedVersion != null && Number(issue.version) !== args.expectedVersion) {
+          return {
+            conflict: true,
+            currentVersion: Number(issue.version),
+            expectedVersion: args.expectedVersion,
+          };
+        }
+
+        const fromStatus = issue.status;
+        const statusChanged = fromStatus !== args.toStatus;
+
+        // 关键校验：进入「失败」列必须填写失败原因
+        if (statusChanged && args.toStatus === FAIL_STATUS) {
+          const reason = String(args.failReason || '').trim();
+          if (!reason) throw bizError('移动到「失败」列前必须填写失败原因');
+        }
+
+        const [rows] = await conn.query(
+          'SELECT id FROM issues WHERE status = ? ORDER BY position ASC, id ASC',
+          [args.toStatus],
+        );
+        const ids = rows.map((r) => r.id).filter((x) => x !== args.id);
+
+        let index = 0;
+        if (args.afterId) {
+          const found = ids.indexOf(args.afterId);
+          index = found >= 0 ? found + 1 : ids.length;
+        }
+        ids.splice(index, 0, args.id);
+
+        // 重新编号，保证 position 连续稳定。
+        // 这里刻意不动 version：同列其他卡片只是被重排，版本号应保持稳定，
+        // 否则任何一次排序都会让全列卡片的乐观锁集体失效。
+        for (let i = 0; i < ids.length; i += 1) {
+          await conn.query('UPDATE issues SET status = ?, position = ? WHERE id = ?', [
+            args.toStatus,
+            i,
+            ids[i],
+          ]);
+        }
+
+        // 只有被移动的这张卡版本号 +1
+        const nextVersion = Number(issue.version) + 1;
+        await conn.query('UPDATE issues SET version = ? WHERE id = ?', [nextVersion, args.id]);
+
+        if (statusChanged) {
+          await conn.query(
+            `INSERT INTO issue_status_logs (issue_id, from_status, to_status, reason, actor)
+             VALUES (?, ?, ?, ?, ?)`,
+            [
+              args.id,
+              fromStatus,
+              args.toStatus,
+              args.toStatus === FAIL_STATUS ? String(args.failReason).trim() : null,
+              args.actor,
+            ],
+          );
+        }
+        return { fromStatus, toStatus: args.toStatus, statusChanged, version: nextVersion };
+      });
+
+      if (result.conflict) {
+        return ok({
+          conflict: true,
+          message: conflictMessage(result.currentVersion, result.expectedVersion),
+          currentVersion: result.currentVersion,
+          issue: await fetchIssueById(args.id),
+        });
+      }
+
+      return ok({ moved: true, ...result });
+    },
+  );
+
+  // 7) 删除任务
+  server.registerTool(
+    'issue_delete',
+    {
+      description: '删除一个任务（标签与变更记录通过外键级联删除）',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async (args) => {
+      const [res] = await query('DELETE FROM issues WHERE id = ?', [args.id]);
+      if (!res.affectedRows) throw bizError('任务不存在或已被删除');
+      return ok({ deleted: true, id: args.id });
+    },
+  );
+
+  // 7.5) 看板概览：为 AI 客户端提供一次调用即可理解的紧凑快照
+  server.registerTool(
+    'board_summary',
+    {
+      description:
+        '返回看板概览：各列任务数、逾期与今日到期的未完成任务、高优先级未完成任务、最近 5 条状态变更。理解看板现状请先调用它，再按需 issue_list。',
+      inputSchema: {},
+    },
+    async () => {
+      const issues = await fetchBoard();
+      const today = new Date().toISOString().slice(0, 10);
+      const open = issues.filter((i) => i.status !== 'done' && i.status !== 'failed');
+
+      const byStatus = {};
+      for (const s of STATUSES) byStatus[s] = issues.filter((i) => i.status === s).length;
+
+      const overdue = open
+        .filter((i) => i.dueDate && i.dueDate < today)
+        .map((i) => ({ id: i.id, title: i.title, dueDate: i.dueDate, status: i.status }));
+      const dueToday = open.filter((i) => i.dueDate === today).map((i) => ({ id: i.id, title: i.title }));
+      const highPriority = open
+        .filter((i) => i.priority === 'high')
+        .map((i) => ({ id: i.id, title: i.title, status: i.status }));
+
+      const logs = issues
+        .flatMap((i) => i.logs.map((l) => ({ ...l, issueId: i.id, issueTitle: i.title })))
+        .sort((a, b) => String(b.changedAt).localeCompare(String(a.changedAt)))
+        .slice(0, 5)
+        .map((l) => ({
+          issueId: l.issueId,
+          issueTitle: l.issueTitle,
+          fromStatus: l.fromStatus,
+          toStatus: l.toStatus,
+          actor: l.actor || '',
+          changedAt: l.changedAt,
+        }));
+
+      return ok({
+        total: issues.length,
+        byStatus,
+        statusLabels: STATUS_LABELS,
+        overdueCount: overdue.length,
+        overdue,
+        dueTodayCount: dueToday.length,
+        dueToday,
+        highPriorityOpen: highPriority,
+        recentChanges: logs,
+        generatedAt: new Date().toISOString(),
+      });
+    },
+  );
+
+  // ------------------------------------------------------------------
+  // 用户（认证身份）。口令哈希在 HTTP 层完成，这里只负责存取。
+  // ------------------------------------------------------------------
+
+  /** users 行 → 对外 JSON（含 password_hash/api_token，仅供 HTTP 层校验，不出 HTTP↔MCP 边界） */
+  function shapeUser(u) {
+    return {
+      id: u.id,
+      username: u.username,
+      displayName: u.display_name || '',
+      passwordHash: u.password_hash,
+      tokenVersion: Number(u.token_version ?? 0),
+      apiToken: u.api_token || null,
+      createdAt: toIsoStr(u.created_at),
+    };
+  }
+
+  // 8) 创建用户
+  server.registerTool(
+    'user_create',
+    {
+      description: '创建一个用户（username 唯一）；apiToken 由 HTTP 层生成后传入',
+      inputSchema: {
+        username: z.string().min(1).max(32),
+        displayName: z.string().max(64).optional().default(''),
+        passwordHash: z.string().min(1).max(255),
+        apiToken: z.string().max(64).nullable().optional(),
+      },
+    },
+    async (args) => {
+      try {
+        const [res] = await query(
+          'INSERT INTO users (username, display_name, password_hash, api_token) VALUES (?, ?, ?, ?)',
+          [args.username, args.displayName, args.passwordHash, args.apiToken ?? null],
+        );
+        return ok({ created: true, id: res.insertId });
+      } catch (err) {
+        if (err && err.code === 'ER_DUP_ENTRY') {
+          throw bizError('用户名已被占用');
+        }
+        throw err;
+      }
+    },
+  );
+
+  // 9) 按用户名取用户（登录用）
+  server.registerTool(
+    'user_get_by_username',
+    {
+      description: '按用户名查找用户；不存在返回 user: null',
+      inputSchema: { username: z.string().min(1).max(32) },
+    },
+    async (args) => {
+      const [[row]] = await query('SELECT * FROM users WHERE username = ?', [args.username]);
+      return ok({ user: row ? shapeUser(row) : null });
+    },
+  );
+
+  // 9.5) 按 API Token 取用户（/mcp 的 Bearer 认证用）
+  server.registerTool(
+    'user_get_by_token',
+    {
+      description: '按 API Token 查找用户；不存在返回 user: null',
+      inputSchema: { token: z.string().min(8).max(64) },
+    },
+    async (args) => {
+      const [[row]] = await query('SELECT * FROM users WHERE api_token = ?', [args.token]);
+      return ok({ user: row ? shapeUser(row) : null });
+    },
+  );
+
+  // 9.6) 设置/轮换 API Token（HTTP 层生成新值后写入）
+  server.registerTool(
+    'user_set_api_token',
+    {
+      description: '写入用户的 API Token（轮换）',
+      inputSchema: {
+        id: z.number().int().positive(),
+        apiToken: z.string().min(8).max(64),
+      },
+    },
+    async (args) => {
+      const [res] = await query('UPDATE users SET api_token = ? WHERE id = ?', [args.apiToken, args.id]);
+      if (!res.affectedRows) throw bizError('用户不存在或已被删除');
+      return ok({ updated: true });
+    },
+  );
+
+  // 10) 按 id 取用户（鉴权中间件用：每次请求校验 token_version）
+  server.registerTool(
+    'user_get_by_id',
+    {
+      description: '按 id 查找用户；不存在返回 user: null',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async (args) => {
+      const [[row]] = await query('SELECT * FROM users WHERE id = ?', [args.id]);
+      return ok({ user: row ? shapeUser(row) : null });
+    },
+  );
+
+  // 11) 吊销版本号 +1（修改密码后使所有旧 JWT 失效）
+  server.registerTool(
+    'user_bump_token_version',
+    {
+      description: '把用户的 token_version +1，返回新版本号',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async (args) => {
+      const [res] = await query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [args.id]);
+      if (!res.affectedRows) throw bizError('用户不存在或已被删除');
+      const [[{ v }]] = await query('SELECT token_version AS v FROM users WHERE id = ?', [args.id]);
+      return ok({ tokenVersion: Number(v) });
+    },
+  );
+
+  // 12) 更新口令哈希（可选同时 bump token_version，同一事务内保证一致）
+  server.registerTool(
+    'user_update_auth',
+    {
+      description: '更新用户口令哈希；bumpTokenVersion 为真时同步 +1 吊销旧会话',
+      inputSchema: {
+        id: z.number().int().positive(),
+        passwordHash: z.string().min(1).max(255),
+        bumpTokenVersion: z.boolean().optional().default(false),
+      },
+    },
+    async (args) => {
+      const { tokenVersion } = await withTransaction(async (conn) => {
+        const [res] = await conn.query(
+          args.bumpTokenVersion
+            ? 'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?'
+            : 'UPDATE users SET password_hash = ? WHERE id = ?',
+          args.bumpTokenVersion ? [args.passwordHash, args.id] : [args.passwordHash, args.id],
+        );
+        if (!res.affectedRows) throw bizError('用户不存在或已被删除');
+        const [[row]] = await conn.query('SELECT token_version AS tv FROM users WHERE id = ?', [args.id]);
+        return { tokenVersion: Number(row.tv) };
+      });
+      return ok({ updated: true, tokenVersion });
+    },
+  );
+
+  // ------------------------------------------------------------------
+  // 启动
+  // ------------------------------------------------------------------
+
+  return server;
 }
 
-// 8) 创建用户
-server.registerTool(
-  'user_create',
-  {
-    description: '创建一个用户（username 唯一）',
-    inputSchema: {
-      username: z.string().min(1).max(32),
-      displayName: z.string().max(64).optional().default(''),
-      passwordHash: z.string().min(1).max(255),
-    },
-  },
-  async (args) => {
-    try {
-      const [res] = await query(
-        'INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)',
-        [args.username, args.displayName, args.passwordHash],
-      );
-      return ok({ created: true, id: res.insertId });
-    } catch (err) {
-      if (err && err.code === 'ER_DUP_ENTRY') {
-        throw bizError('用户名已被占用');
-      }
-      throw err;
-    }
-  },
-);
-
-// 9) 按用户名取用户（登录用）
-server.registerTool(
-  'user_get_by_username',
-  {
-    description: '按用户名查找用户；不存在返回 user: null',
-    inputSchema: { username: z.string().min(1).max(32) },
-  },
-  async (args) => {
-    const [[row]] = await query('SELECT * FROM users WHERE username = ?', [args.username]);
-    return ok({ user: row ? shapeUser(row) : null });
-  },
-);
-
-// 10) 按 id 取用户（鉴权中间件用：每次请求校验 token_version）
-server.registerTool(
-  'user_get_by_id',
-  { description: '按 id 查找用户；不存在返回 user: null', inputSchema: { id: z.number().int().positive() } },
-  async (args) => {
-    const [[row]] = await query('SELECT * FROM users WHERE id = ?', [args.id]);
-    return ok({ user: row ? shapeUser(row) : null });
-  },
-);
-
-// 11) 吊销版本号 +1（修改密码后使所有旧 JWT 失效）
-server.registerTool(
-  'user_bump_token_version',
-  {
-    description: '把用户的 token_version +1，返回新版本号',
-    inputSchema: { id: z.number().int().positive() },
-  },
-  async (args) => {
-    const [res] = await query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [args.id]);
-    if (!res.affectedRows) throw bizError('用户不存在或已被删除');
-    const [[{ v }]] = await query('SELECT token_version AS v FROM users WHERE id = ?', [args.id]);
-    return ok({ tokenVersion: Number(v) });
-  },
-);
-
-// 12) 更新口令哈希（可选同时 bump token_version，同一事务内保证一致）
-server.registerTool(
-  'user_update_auth',
-  {
-    description: '更新用户口令哈希；bumpTokenVersion 为真时同步 +1 吊销旧会话',
-    inputSchema: {
-      id: z.number().int().positive(),
-      passwordHash: z.string().min(1).max(255),
-      bumpTokenVersion: z.boolean().optional().default(false),
-    },
-  },
-  async (args) => {
-    const { tokenVersion } = await withTransaction(async (conn) => {
-      const [res] = await conn.query(
-        args.bumpTokenVersion
-          ? 'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?'
-          : 'UPDATE users SET password_hash = ? WHERE id = ?',
-        args.bumpTokenVersion ? [args.passwordHash, args.id] : [args.passwordHash, args.id],
-      );
-      if (!res.affectedRows) throw bizError('用户不存在或已被删除');
-      const [[row]] = await conn.query('SELECT token_version AS tv FROM users WHERE id = ?', [args.id]);
-      return { tokenVersion: Number(row.tv) };
-    });
-    return ok({ updated: true, tokenVersion });
-  },
-);
-
-// ------------------------------------------------------------------
-// 启动
-// ------------------------------------------------------------------
 async function main() {
+  const server = createBoardServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // 注意：诊断日志只能写 stderr，stdout 被 MCP 协议占用
@@ -735,16 +847,22 @@ async function main() {
   process.stdin.resume();
 }
 
-// 兜底：意外异常直接退出（crash-only），由 HTTP 层的重连机制恢复
-process.on('uncaughtException', (err) => {
-  console.error('[cloudissue-mcp] uncaughtException:', err);
-  closeDb().finally(() => process.exit(1));
-});
-process.on('unhandledRejection', (err) => {
-  console.error('[cloudissue-mcp] unhandledRejection:', err);
-});
+// 仅直接运行（stdio 模式）时才注册 stdio 入口与进程级兜底：
+// 被 server/mcp-http.js import 时，进程级策略归 HTTP 层管，这里绝不能抢
+const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 
-main().catch((err) => {
-  console.error('[cloudissue-mcp] fatal:', err);
-  process.exit(1);
-});
+if (isDirectRun) {
+  // 兜底：意外异常直接退出（crash-only），由 HTTP 层的重连机制恢复
+  process.on('uncaughtException', (err) => {
+    console.error('[cloudissue-mcp] uncaughtException:', err);
+    closeDb().finally(() => process.exit(1));
+  });
+  process.on('unhandledRejection', (err) => {
+    console.error('[cloudissue-mcp] unhandledRejection:', err);
+  });
+
+  main().catch((err) => {
+    console.error('[cloudissue-mcp] fatal:', err);
+    process.exit(1);
+  });
+}

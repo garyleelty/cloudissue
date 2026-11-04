@@ -45,6 +45,45 @@ async function getIssue(id) {
   return (data.issues || []).find((i) => i.id === id);
 }
 
+/** 以 Bearer Token 调用 /mcp（JSON-RPC）；响应可能是 SSE，统一抽取 data 行 */
+async function mcpCall(token, id, method, params) {
+  const res = await fetch(BASE + '/mcp', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+  });
+  const raw = await res.text();
+  let payload = raw;
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('data:')) {
+      payload = line.slice(5).trim();
+      break;
+    }
+  }
+  let data = {};
+  try {
+    data = JSON.parse(payload);
+  } catch {
+    /* empty */
+  }
+  return { status: res.status, data };
+}
+
+/** 取 MCP tool 结果里首个 text content 的 JSON */
+function jsonContent(rpcResult) {
+  const text = rpcResult?.result?.content?.[0]?.text;
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   console.log('\n--- 1. 健康检查（经 MCP） ---');
   const health = await api('/api/health');
@@ -419,6 +458,111 @@ async function main() {
 
   const delMissing = await post('/api/issues/batch/delete', { ids: [99999999] });
   check('删除不存在的任务返回 400', delMissing.status === 400, JSON.stringify(delMissing.data));
+
+  console.log('\n--- 14. AI 接入（/mcp 与 API Token） ---');
+  // Token 管理：登录用户可查看（惰性生成）与轮换
+  const tokenRes = await api('/api/auth/token');
+  const token = tokenRes.data.token;
+  check(
+    '登录用户可获取 API Token',
+    tokenRes.status === 200 && /^ci_[0-9a-f]{48}$/.test(token || ''),
+    String(token),
+  );
+
+  const tokenAgain = await api('/api/auth/token');
+  check('Token 惰性生成后保持不变', tokenAgain.data.token === token, String(tokenAgain.data.token));
+
+  // /mcp 鉴权
+  const anonMcp = await fetch(BASE + '/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  });
+  check('无 Token 访问 /mcp 返回 401', anonMcp.status === 401, String(anonMcp.status));
+
+  const badTokMcp = await mcpCall(
+    'ci_deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+    1,
+    'tools/list',
+  );
+  check('无效 Token 访问 /mcp 返回 401', badTokMcp.status === 401, String(badTokMcp.status));
+
+  // JSON-RPC 握手 + tools/call
+  const init = await mcpCall(token, 1, 'initialize', {
+    protocolVersion: '2025-03-26',
+    capabilities: {},
+    clientInfo: { name: 'integration-test', version: '0' },
+  });
+  check(
+    'MCP initialize 握手成功',
+    init.status === 200 && init.data.result?.serverInfo?.name === 'cloudissue-data',
+    JSON.stringify(init.data).slice(0, 120),
+  );
+
+  const summary = await mcpCall(token, 2, 'tools/call', { name: 'board_summary', arguments: {} });
+  const summaryOut = jsonContent(summary.data);
+  check(
+    'board_summary 返回看板概览',
+    Number.isInteger(summaryOut?.total) && summaryOut.total >= 10 && summaryOut.byStatus,
+    JSON.stringify(summaryOut).slice(0, 160),
+  );
+
+  // AI 自报身份建卡 → 人在时间线里能看到 AI 留名
+  const aiCreate = await mcpCall(token, 3, 'tools/call', {
+    name: 'issue_create',
+    arguments: {
+      title: 'AI 接入验证卡',
+      description: '由集成测试经 /mcp 创建',
+      status: 'backlog',
+      actor: 'ai:integration-test',
+    },
+  });
+  const aiOut = jsonContent(aiCreate.data);
+  const aiId = aiOut?.id;
+  check(
+    'AI 经 /mcp 建卡成功',
+    aiCreate.status === 200 && Number.isInteger(aiId),
+    JSON.stringify(aiOut).slice(0, 160),
+  );
+  check(
+    'AI 建卡的变更记录带 actor',
+    aiOut?.issue?.logs?.[0]?.actor === 'ai:integration-test',
+    JSON.stringify(aiOut?.issue?.logs?.[0]),
+  );
+
+  const seenFromWeb = await api('/api/issues');
+  const aiIssue = (seenFromWeb.data.issues || []).find((i) => i.id === aiId);
+  check(
+    '人（Web API）能看到 AI 创建的卡与其身份',
+    aiIssue?.logs?.[0]?.actor === 'ai:integration-test',
+    JSON.stringify(aiIssue?.logs?.[0]),
+  );
+
+  // Web 端建卡的 actor 是用户名
+  const webCreate = await post('/api/issues', { title: 'Web 端 actor 验证卡', status: 'backlog' });
+  check(
+    'Web 建卡的变更记录 actor 为登录用户名',
+    webCreate.data.issue?.logs?.[0]?.actor === USER_A,
+    JSON.stringify(webCreate.data.issue?.logs?.[0]),
+  );
+
+  // 清理两张验证卡
+  await del(`/api/issues/${aiId}`);
+  await del(`/api/issues/${webCreate.data.id}`);
+
+  // 轮换：旧 token 立即失效、新 token 可用
+  const rotated = await api('/api/auth/token/rotate', { method: 'POST' });
+  const newToken = rotated.data.token;
+  check('轮换返回新 Token', rotated.status === 200 && newToken && newToken !== token, String(newToken));
+
+  const oldTok = await mcpCall(token, 4, 'tools/list');
+  check('轮换后旧 Token 立即失效', oldTok.status === 401, String(oldTok.status));
+  const newTok = await mcpCall(newToken, 5, 'tools/list');
+  check(
+    '轮换后新 Token 可用',
+    newTok.status === 200 && Array.isArray(newTok.data.result?.tools),
+    String(newTok.status),
+  );
 
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
