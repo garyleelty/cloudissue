@@ -585,6 +585,50 @@ console.log('\n--- issue board 核心能力 ---');
 }
 
 // ------------------------------------------------------------------
+// 列表视图：切换 / 排序 / 分页（fixture 5 条不满一页，分页只验结构）
+// ------------------------------------------------------------------
+console.log('\n--- 列表视图 ---');
+{
+  $('#viewList').click();
+  await wait(80);
+  check('切换到列表视图', document.querySelector('#board').hidden === true && !document.querySelector('#listView').hidden);
+  check('列表渲染 5 行', document.querySelectorAll('.issue-table tbody tr').length === 5, String(document.querySelectorAll('.issue-table tbody tr').length));
+  check('卡片编号列存在', document.querySelector('.issue-table tbody .td-id .cell-no')?.textContent === '#1');
+
+  // 点「优先级」排序：fixture 1 条 high / 2 条 medium / 2 条 low
+  document.querySelector('th[data-sort="priority"]').click();
+  await wait(80);
+  const prios = [...document.querySelectorAll('.issue-table tbody .td-priority .chip')].map((c) => c.textContent.trim());
+  check('按优先级升序排列', JSON.stringify(prios) === JSON.stringify(['高', '高', '中', '低', '低']), JSON.stringify(prios));
+
+  // 同列再点反转
+  document.querySelector('th[data-sort="priority"]').click();
+  await wait(80);
+  const priosDesc = [...document.querySelectorAll('.issue-table tbody .td-priority .chip')].map((c) => c.textContent.trim());
+  check('同列再点反向排列', JSON.stringify(priosDesc) === JSON.stringify(['低', '低', '中', '高', '高']), JSON.stringify(priosDesc));
+
+  // 列表点标题打开抽屉
+  document.querySelector('.issue-table tbody .card-open').click();
+  await wait(150);
+  check('列表点标题打开抽屉', document.querySelector('#drawerRoot').hidden === false);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(50);
+
+  // 筛选在列表视图同样生效
+  s.filters.keyword = '任务2';
+  notify();
+  await wait(80);
+  check('列表视图筛选生效（关键词命中 1 行）', document.querySelectorAll('.issue-table tbody tr').length === 1, String(document.querySelectorAll('.issue-table tbody tr').length));
+  s.filters.keyword = '';
+  notify();
+
+  // 切回看板
+  $('#viewBoard').click();
+  await wait(80);
+  check('切回看板视图', document.querySelector('#board').hidden === false && document.querySelector('#listView').hidden === true);
+}
+
+// ------------------------------------------------------------------
 // CSS 静态回归：带 display 值的类不能让 [hidden] 失效。
 // jsdom 不加载外部样式表、无布局引擎，computed style 测不到这类问题，
 // 因此做源码级断言。此前已两次踩坑（.modal-root / .fm-row 覆盖

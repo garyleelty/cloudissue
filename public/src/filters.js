@@ -38,7 +38,5 @@ export function filteredIssues() {
 /** @returns {boolean} */
 export function hasActiveFilters() {
   const f = state.filters;
-  return (
-    Boolean(f.keyword) || f.priority.size > 0 || f.tag.size > 0 || f.assignee.size > 0 || f.aiOnly
-  );
+  return Boolean(f.keyword) || f.priority.size > 0 || f.tag.size > 0 || f.assignee.size > 0 || f.aiOnly;
 }

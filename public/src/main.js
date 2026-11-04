@@ -38,6 +38,7 @@ import {
   drawerIssueId,
   refresh as refreshDrawer,
 } from './drawer.js';
+import { initListView, renderList, resetListPage } from './listview.js';
 import { STATUSES, STATUS_LABELS, FAIL_STATUS, MOBILE_BREAKPOINT } from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -83,6 +84,23 @@ async function checkHealth() {
     dot.className = 'health err';
     text.textContent = '数据链路异常';
   }
+}
+
+/** 看板 / 列表视图切换（筛选状态两边共用） */
+function switchView(view) {
+  state.view = view;
+  $('#board').hidden = view !== 'board';
+  $('#listView').hidden = view !== 'list';
+  $('#viewBoard').classList.toggle('active', view === 'board');
+  $('#viewList').classList.toggle('active', view === 'list');
+  $('#viewBoard').setAttribute('aria-selected', String(view === 'board'));
+  $('#viewList').setAttribute('aria-selected', String(view === 'list'));
+  notify();
+}
+
+/** 列表视图点击标题 → 打开与看板相同的详情抽屉 */
+export function openIssueDrawer(id) {
+  openDrawer(id);
 }
 
 // ------------------------------------------------------------------
@@ -178,6 +196,7 @@ function bindGlobalEvents() {
   $('#btnClear').addEventListener('click', () => {
     resetFilters();
     clearSelection();
+    resetListPage();
     $('#fKeyword').value = '';
     $('#btnMine').setAttribute('aria-pressed', 'false');
     $('#btnAI').setAttribute('aria-pressed', 'false');
@@ -188,8 +207,13 @@ function bindGlobalEvents() {
   $('#btnAI').addEventListener('click', () => {
     state.filters.aiOnly = !state.filters.aiOnly;
     $('#btnAI').setAttribute('aria-pressed', String(state.filters.aiOnly));
+    resetListPage();
     notify();
   });
+
+  // 视图切换：看板 / 列表
+  $('#viewBoard').addEventListener('click', () => switchView('board'));
+  $('#viewList').addEventListener('click', () => switchView('list'));
 
   // 「我的」：一键只看指派给自己的 issue（再点一次取消）
   $('#btnMine').addEventListener('click', () => {
@@ -201,6 +225,7 @@ function bindGlobalEvents() {
       if (state.me?.id) state.filters.assignee.add(String(state.me.id));
       $('#btnMine').setAttribute('aria-pressed', 'true');
     }
+    resetListPage();
     notify();
   });
 
@@ -211,6 +236,7 @@ function bindGlobalEvents() {
     const v = e.target.value;
     searchTimer = setTimeout(() => {
       state.filters.keyword = v.trim();
+      resetListPage();
       notify();
     }, 160);
   });
@@ -370,6 +396,7 @@ async function init() {
   initCrossTabSync(load);
   initDrawer();
   bindDrawer({ onEdit: (issue) => openForm(issue) });
+  initListView();
   bindDropdowns();
   bindGlobalEvents();
   bindBatchBar();
@@ -378,7 +405,10 @@ async function init() {
   // 任意请求 401（会话过期/被吊销）→ 统一切回登录视图
   window.addEventListener('ci:unauthorized', showAuth);
 
-  onChange(() => render.renderBoard());
+  onChange(() => {
+    render.renderBoard();
+    renderList();
+  });
 
   // 健康状态周期性刷新，链路断了状态灯能自己翻红
   await checkHealth();

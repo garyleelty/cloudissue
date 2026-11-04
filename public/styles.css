@@ -1589,3 +1589,162 @@ body:has(#batchBar:not([hidden])) .toast-root {
   color: var(--purple);
   font-weight: 600;
 }
+
+/* ==========================================================================
+   视图切换 / 列表视图
+   ========================================================================== */
+.view-toggle {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--r-md);
+  background: var(--surface-sunken);
+  margin-left: auto;
+}
+
+.view-tab {
+  padding: 6px 14px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+  transition:
+    background 0.2s var(--ease),
+    color 0.2s var(--ease),
+    box-shadow 0.2s var(--ease);
+}
+
+.view-tab.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--sh-1);
+}
+
+.list-view {
+  padding: 18px 22px 40px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.list-scroll {
+  overflow-x: auto;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.issue-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 860px;
+}
+
+.issue-table th {
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.issue-table th:hover {
+  color: var(--text);
+}
+
+.issue-table th.col-ic {
+  cursor: default;
+}
+
+.issue-table th.sorted {
+  color: var(--blue);
+}
+
+.sort-arrow {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.issue-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.issue-table tbody tr {
+  transition: background 0.15s var(--ease);
+}
+
+.issue-table tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.issue-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cell-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 220px;
+}
+
+.cell-title .card-open {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cell-title .card-open:hover {
+  color: var(--blue);
+}
+
+.cell-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cell-no {
+  color: var(--text-4);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.cell-time {
+  color: var(--text-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.td-commentCount {
+  color: var(--text-3);
+}
+
+.list-empty {
+  padding: 48px 0;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 16px 0 4px;
+}
+
+.pager-info {
+  font-size: 12.5px;
+  color: var(--text-3);
+}

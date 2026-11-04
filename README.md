@@ -504,7 +504,7 @@ curl -X POST http://localhost:5173/mcp \
 ```bash
 npm run lint       # ESLint 检查
 npm run test:mcp   # MCP 链路冒烟：验证 stdio 传输正常、20 个 tools 全部注册（不需服务）
-npm test           # 端到端集成测试：全链路、业务规则、认证与 AI 接入（115 项断言，需先起服务）
+npm test           # 端到端集成测试：全链路、业务规则、认证与 AI 接入（121 项断言，需先起服务）
 npm run test:ui    # UI 冒烟（jsdom，86 项断言，不需服务与数据库）
 ```
 

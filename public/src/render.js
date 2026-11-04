@@ -140,6 +140,7 @@ export function buildSkeleton() {
 
 /** 增量更新：只改动必要的 DOM */
 export function renderBoard() {
+  if (state.view !== 'board') return;
   buildSkeleton();
 
   const filtered = filteredIssues();

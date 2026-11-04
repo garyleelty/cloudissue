@@ -139,6 +139,13 @@
         <button id="btnMine" class="btn btn-ghost" type="button" aria-pressed="false">我的</button>
         <button id="btnAI" class="btn btn-ghost" type="button" aria-pressed="false">AI 动态</button>
         <button id="btnClear" class="btn btn-ghost btn-clear" type="button">清空筛选</button>
+
+        <div class="view-toggle" role="tablist" aria-label="视图切换">
+          <button id="viewBoard" class="view-tab active" type="button" role="tab" aria-selected="true">
+            看板
+          </button>
+          <button id="viewList" class="view-tab" type="button" role="tab" aria-selected="false">列表</button>
+        </div>
       </div>
     </section>
 
@@ -147,6 +154,9 @@
 
     <!-- ===================== 看板 ===================== -->
     <main id="board" class="board" aria-label="任务看板"></main>
+
+    <!-- ===================== 列表视图 ===================== -->
+    <main id="listView" class="list-view" aria-label="任务列表" hidden></main>
 
     <!-- ===================== 批量操作条 ===================== -->
     <div id="batchBar" class="batch-bar" hidden>
