@@ -48,8 +48,14 @@ jobs:
       - name: 前端冒烟（jsdom，离线）
         run: npm run test:ui
 
+      # 失败时把测试输出打成 ::error:: 注解（无需登录即可通过 API 排查）
       - name: MCP 链路冒烟（离线）
-        run: npm run test:mcp
+        run: |
+          set -o pipefail
+          npm run test:mcp 2>&1 | tee /tmp/mcp.log || {
+            grep -E "FAIL|缺少|Error|error" /tmp/mcp.log | head -20 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
 
       - name: 集成测试（HTTP → MCP → MySQL 全链路）
         run: |
@@ -58,7 +64,12 @@ jobs:
             curl -sf http://127.0.0.1:5173/api/health >/dev/null && break
             sleep 1
           done
-          npm test
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/integration.log || {
+            grep -E "FAIL|测试异常" /tmp/integration.log | head -20 | while IFS= read -r l; do echo "::error::$l"; done
+            tail -30 server.log >&2
+            exit 1
+          }
 
       - name: 输出服务日志（仅失败时）
         if: failure()
