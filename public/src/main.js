@@ -30,7 +30,14 @@ import {
   cancelPendingReason,
   hasPendingReason,
 } from './modals.js';
-import { initBoards, loadBoards, switchBoard, hasBoard, syncBoardAfterDataChange } from './boards.js';
+import {
+  initBoards,
+  loadBoards,
+  switchBoard,
+  hasBoard,
+  syncBoardAfterDataChange,
+  syncWriteUI,
+} from './boards.js';
 import {
   initDrawer,
   bindDrawer,
@@ -120,7 +127,7 @@ function showAuth() {
   state.currentBoardId = null;
   closeDrawer();
   $('#boardSwitch').hidden = true;
-  $('#btnExport').disabled = true;
+  syncWriteUI();
   authView.hidden = false;
   $('#userChip').hidden = true;
   $('#btnLogout').hidden = true;
@@ -139,7 +146,7 @@ function showBoard(user) {
   $('#btnLogout').hidden = false;
   // 先看板列表、后任务：load 依赖 currentBoardId，顺序不能反
   loadBoards().then((ok) => {
-    $('#btnExport').disabled = !ok;
+    syncWriteUI();
     if (ok) load();
     else notify(); // 没有任何看板：渲染空看板
   });

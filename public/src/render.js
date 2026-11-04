@@ -9,6 +9,7 @@
 import { state } from './state.js';
 import { filteredIssues, hasActiveFilters } from './filters.js';
 import { esc, fmtDateTime, dueInfo } from './utils.js';
+import { myRole } from './boards.js';
 import {
   STATUSES,
   STATUS_LABELS,
@@ -50,6 +51,7 @@ function cardSignature(issue) {
     issue.logs.length,
     issue.commentCount,
     state.expanded.has(issue.id),
+    myRole(),
   ]);
 }
 
@@ -75,6 +77,8 @@ function cardInnerHtml(issue) {
   const isOpen = state.expanded.has(issue.id);
   const { text: dueText, cls: dueClass } = dueInfo(issue);
   const typeInfo = ISSUE_TYPE_LABELS[issue.type] || ISSUE_TYPE_LABELS.task;
+  // viewer（只读成员）收起勾选与编辑/删除入口；真正的护栏在服务端
+  const canWrite = myRole() !== 'viewer';
 
   const tagsHtml = issue.tags.map((t) => `<span class="chip tag"># ${esc(t)}</span>`).join('');
 
@@ -84,8 +88,12 @@ function cardInnerHtml(issue) {
 
   return `
     <div class="card-top">
-      <input class="card-pick" type="checkbox" data-act="select" data-id="${issue.id}"
-             aria-label="选择任务「${esc(issue.title)}」"${picked ? ' checked' : ''} />
+      ${
+        canWrite
+          ? `<input class="card-pick" type="checkbox" data-act="select" data-id="${issue.id}"
+             aria-label="选择任务「${esc(issue.title)}」"${picked ? ' checked' : ''} />`
+          : ''
+      }
       <h3 class="card-title"><button class="card-open" type="button" data-act="open" data-id="${issue.id}" title="查看详情"><span class="card-no">#${issue.id}</span> ${esc(issue.title)}</button></h3>
     </div>
     ${issue.description ? `<p class="card-desc">${esc(issue.description)}</p>` : ''}
@@ -103,12 +111,16 @@ function cardInnerHtml(issue) {
           变更 ${issue.logs.length}${issue.commentCount ? ` · 评论 ${issue.commentCount}` : ''}
           <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
         </button>
-        <button class="icon-btn" type="button" data-act="edit" data-id="${issue.id}" aria-label="编辑">
+        ${
+          canWrite
+            ? `<button class="icon-btn" type="button" data-act="edit" data-id="${issue.id}" aria-label="编辑">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
         </button>
         <button class="icon-btn" type="button" data-act="delete" data-id="${issue.id}" aria-label="删除">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
-        </button>
+        </button>`
+            : ''
+        }
       </div>
     </div>
     <div class="log-list${isOpen ? ' open' : ''}">${logsHtml || '<div class="log-from">暂无记录</div>'}</div>`;
@@ -162,6 +174,9 @@ export function renderBoard() {
     const colBody = col.querySelector('.col-body');
     const all = state.issues.filter((i) => i.status === status);
     const shown = filtered.filter((i) => i.status === status);
+
+    // viewer 收起列头全选框（没有可执行的选择操作）
+    col.querySelector('.col-pick').hidden = myRole() === 'viewer';
 
     const countEl = col.querySelector('.col-count');
     countEl.textContent = `${shown.length}/${all.length}`;

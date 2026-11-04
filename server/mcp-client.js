@@ -8,6 +8,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from './logger.js';
+import { currentActorId } from '../mcp-server/index.js';
+// 与 mcp-server 共享同一个身份上下文：authRequired 存入登录用户 id，
+// callTool 取出注入 args.actorId（stdio 子进程里的权限护栏只认这条链路）
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(here, '..');
@@ -65,6 +68,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * - 其余一律视为系统故障 → 502 通用文案，细节只进日志。
  */
 export async function callTool(name, args = {}, attempt = 0) {
+  // 注入调用者身份：子进程里的权限护栏据此校验（外部 AI 客户端够不到这条链路）
+  const actorId = currentActorId();
+  if (actorId) args = { ...args, actorId };
   let res;
   try {
     const client = await getMcpClient();

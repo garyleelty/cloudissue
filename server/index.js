@@ -183,6 +183,46 @@ app.delete(
   }),
 );
 
+// 看板成员与角色：护栏在 MCP 数据层（人与 AI 同受约束），这里只做转发
+app.get(
+  '/api/boards/:id/members',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '非法的看板 ID' });
+    const data = await callTool('member_list', { boardId: id });
+    res.json(data);
+  }),
+);
+
+app.post(
+  '/api/boards/:id/members',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '非法的看板 ID' });
+    const userId = Number(req.body?.userId);
+    if (!Number.isInteger(userId) || userId <= 0) return res.status(400).json({ error: '非法的用户 ID' });
+    const role = req.body?.role ?? 'member';
+    if (!['owner', 'member', 'viewer'].includes(role)) {
+      return res.status(400).json({ error: '非法的角色' });
+    }
+    const data = await callTool('member_add', { boardId: id, userId, role });
+    res.status(201).json(data);
+  }),
+);
+
+app.delete(
+  '/api/boards/:id/members/:userId',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const userId = Number(req.params.userId);
+    if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(userId) || userId <= 0) {
+      return res.status(400).json({ error: '非法的 ID' });
+    }
+    const data = await callTool('member_remove', { boardId: id, userId });
+    res.json(data);
+  }),
+);
+
 /**
  * 导出 CSV：按当前筛选条件导出 issue 清单。
  * 数据经 MCP 的 issue_list 拉取（不在 HTTP 层碰 SQL）；

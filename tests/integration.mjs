@@ -1000,6 +1000,177 @@ async function main() {
   const delDefaultCard = await del(`/api/issues/${defaultCard.data.id}`);
   check('清理默认板导出验证卡', delDefaultCard.status === 200, JSON.stringify(delDefaultCard.data));
 
+  console.log('\n--- 19. 看板成员与权限（owner/member/viewer） ---');
+  // 三个新用户：A 建板（owner）、B 被加入（member）、C 被加入（viewer）
+  const regU = async (name) => {
+    const saved = cookieJar;
+    cookieJar = '';
+    const r = await post('/api/auth/register', { username: name, password: 'password123' });
+    cookieJar = saved;
+    return r.data.user;
+  };
+  const loginAs = async (username) => {
+    const saved = cookieJar;
+    cookieJar = '';
+    await post('/api/auth/login', { username, password: 'password123' });
+    const jar = cookieJar;
+    cookieJar = saved;
+    return jar;
+  };
+  const withJar = async (jar, fn) => {
+    const saved = cookieJar;
+    cookieJar = jar;
+    try {
+      return await fn();
+    } finally {
+      cookieJar = saved;
+    }
+  };
+
+  const UA = await regU(`perm_a_${uniq}`);
+  const UB = await regU(`perm_b_${uniq}`);
+  const UC = await regU(`perm_c_${uniq}`);
+  check('注册三个权限测试用户', Boolean(UA?.id && UB?.id && UC?.id));
+  const jarA = await loginAs(`perm_a_${uniq}`);
+  const jarB = await loginAs(`perm_b_${uniq}`);
+  const jarC = await loginAs(`perm_c_${uniq}`);
+
+  // 新注册用户默认是默认看板的 member：可读，也可建卡
+  const b0 = await withJar(jarB, () => api('/api/boards'));
+  check(
+    '新用户默认加入默认看板为 member',
+    b0.data.boards.some((b) => b.name === '默认看板' && b.myRole === 'member'),
+    JSON.stringify(b0.data).slice(0, 160),
+  );
+
+  // A 建私有板（owner）
+  const permBoard = await withJar(jarA, () => post('/api/boards', { name: `权限板_${uniq}` }));
+  const pbId = permBoard.data.board?.id;
+  check('创建者自动成为 owner', permBoard.data.board?.myRole === 'owner', JSON.stringify(permBoard.data));
+
+  // B（未加入）不可见也不可写：私有化可见范围
+  const bB = await withJar(jarB, () => api('/api/boards'));
+  check('非成员的看板列表不可见', !bB.data.boards.some((b) => b.id === pbId));
+  const bBissue = await withJar(jarB, () => api(`/api/issues?boardId=${pbId}`));
+  check(
+    '非成员读看板被拒绝（400）',
+    bBissue.status === 400 && /成员/.test(bBissue.data.error || ''),
+    JSON.stringify(bBissue.data),
+  );
+
+  // A 把 B 加为 member、C 加为 viewer
+  const addB = await withJar(jarA, () =>
+    post(`/api/boards/${pbId}/members`, { userId: UB.id, role: 'member' }),
+  );
+  check(
+    'owner 添加 member 成功',
+    addB.status === 201 && addB.data.updated === true,
+    JSON.stringify(addB.data),
+  );
+  const addC = await withJar(jarA, () =>
+    post(`/api/boards/${pbId}/members`, { userId: UC.id, role: 'viewer' }),
+  );
+  check('owner 添加 viewer 成功', addC.status === 201);
+
+  // member 可写
+  const bCard = await withJar(jarB, () => post('/api/issues', { title: `成员建卡_${uniq}`, boardId: pbId }));
+  check(
+    'member 建卡成功',
+    bCard.status === 201 && bCard.data.issue?.boardId === pbId,
+    JSON.stringify(bCard.data).slice(0, 120),
+  );
+  const bEdit = await withJar(jarB, () => put(`/api/issues/${bCard.data.id}`, { title: `成员改卡_${uniq}` }));
+  check('member 改卡成功', bEdit.status === 200);
+
+  // viewer 可读不可写
+  const cRead = await withJar(jarC, () => api(`/api/issues?boardId=${pbId}`));
+  check('viewer 可读看板', cRead.status === 200 && cRead.data.issues?.length === 1, String(cRead.status));
+  const cWrite = await withJar(jarC, () => post('/api/issues', { title: 'viewer越权卡', boardId: pbId }));
+  check(
+    'viewer 写看板被拒绝（400）',
+    cWrite.status === 400 && /只读成员/.test(cWrite.data.error || ''),
+    JSON.stringify(cWrite.data),
+  );
+  const cDel = await withJar(jarC, () => del(`/api/issues/${bCard.data.id}`));
+  check('viewer 删卡被拒绝', cDel.status === 400);
+
+  // member 不能管理成员、不能删板；owner 专属操作
+  const bAddMember = await withJar(jarB, () =>
+    post(`/api/boards/${pbId}/members`, { userId: UA.id, role: 'viewer' }),
+  );
+  check('member 添加成员被拒（owner 专属）', bAddMember.status === 400, JSON.stringify(bAddMember.data));
+  const cDelBoard = await withJar(jarC, () => del(`/api/boards/${pbId}`));
+  check('viewer 删板被拒（owner 专属）', cDelBoard.status === 400);
+  const bDelBoard = await withJar(jarB, () => del(`/api/boards/${pbId}`));
+  check('member 删板被拒（owner 专属）', bDelBoard.status === 400);
+
+  // 成员列表与最后 owner 保护
+  const mList = await withJar(jarC, () => api(`/api/boards/${pbId}/members`));
+  check(
+    'viewer 可看成员列表（3 人）',
+    mList.status === 200 && mList.data.members?.length === 3,
+    JSON.stringify(mList.data).slice(0, 160),
+  );
+  const demoteOwner = await withJar(jarA, () =>
+    post(`/api/boards/${pbId}/members`, { userId: UA.id, role: 'member' }),
+  );
+  check('降级最后一个 owner 被拒', demoteOwner.status === 400, JSON.stringify(demoteOwner.data));
+  const removeOwner = await withJar(jarA, () => del(`/api/boards/${pbId}/members/${UA.id}`));
+  check('移除最后一个 owner 被拒', removeOwner.status === 400, JSON.stringify(removeOwner.data));
+
+  // AI 越权：AI token（A 的）对 A 不在的板写 → 被护栏拦截；
+  // 且 JSON-RPC 里伪造 actorId 无效——身份以 Bearer Token 为准
+  const aiTokenRes = await withJar(jarA, () => api('/api/auth/token'));
+  const aiToken = aiTokenRes.data.token;
+  check('A 获取 AI Token', Boolean(aiToken), String(aiTokenRes.status));
+  const aiForge = await mcpCall(aiToken, 40, 'tools/call', {
+    name: 'issue_create',
+    arguments: { title: '伪造身份卡', boardId: pbId, actorId: UC.id },
+  });
+  const aiForgeText = aiForge.data?.result?.content?.[0]?.text || '';
+  check(
+    'AI 塞伪造 actorId 无效（以 Token 身份 = owner 放行）',
+    jsonContent(aiForge.data)?.created === true,
+    aiForgeText.slice(0, 120),
+  );
+  const aiCard = jsonContent(aiForge.data)?.issue?.id;
+  // C（viewer）的 AI token 对私有板写 → 与 Web 同受只读护栏
+  const aiTokenC = await withJar(jarC, () => api('/api/auth/token')).then((r) => r.data.token);
+  const aiC = await mcpCall(aiTokenC, 41, 'tools/call', {
+    name: 'issue_create',
+    arguments: { title: 'AI只读越权卡', boardId: pbId },
+  });
+  check(
+    'AI viewer 写看板被拒（isError）',
+    jsonContent(aiC.data) === null && /只读成员/.test(aiC.data?.result?.content?.[0]?.text || ''),
+    (aiC.data?.result?.content?.[0]?.text || '').slice(0, 120),
+  );
+  // 无关用户 D 的 AI token（非成员）→ 越权被拦
+  await regU(`perm_d_${uniq}`);
+  const jarD = await loginAs(`perm_d_${uniq}`);
+  const aiTokenD = await withJar(jarD, () => api('/api/auth/token')).then((r) => r.data.token);
+  const aiD = await mcpCall(aiTokenD, 42, 'tools/call', {
+    name: 'issue_create',
+    arguments: { title: 'AI越权卡', boardId: pbId },
+  });
+  check(
+    'AI 非成员写私有板被拒（isError）',
+    jsonContent(aiD.data) === null && /成员/.test(aiD.data?.result?.content?.[0]?.text || ''),
+    (aiD.data?.result?.content?.[0]?.text || '').slice(0, 120),
+  );
+
+  // C 被移除后立即失去可见性
+  const rmC = await withJar(jarA, () => del(`/api/boards/${pbId}/members/${UC.id}`));
+  check('owner 移除 viewer 成功', rmC.status === 200, JSON.stringify(rmC.data));
+  const cAfter = await withJar(jarC, () => api(`/api/issues?boardId=${pbId}`));
+  check('被移除的成员立即失去访问权', cAfter.status === 400, String(cAfter.status));
+
+  // 清理
+  const delPermCard = await withJar(jarA, () => del(`/api/issues/${aiCard}`));
+  check('清理权限测试卡', delPermCard.status === 200);
+  const delPermBoard = await withJar(jarA, () => del(`/api/boards/${pbId}`));
+  check('清理权限测试看板', delPermBoard.status === 200, JSON.stringify(delPermBoard.data));
+
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
   console.log(`=====================================\n`);

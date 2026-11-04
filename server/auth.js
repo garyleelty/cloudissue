@@ -17,6 +17,7 @@ import jwt from 'jsonwebtoken';
 import { Router } from 'express';
 import { z } from 'zod';
 import { callTool } from './mcp-client.js';
+import { runAsActor } from '../mcp-server/index.js';
 import { generateApiToken } from './mcp-http.js';
 import { logger } from './logger.js';
 
@@ -86,7 +87,8 @@ export async function authRequired(req, res, next) {
     }
 
     req.user = publicUser(user);
-    next();
+    // 后续所有数据操作都带调用者身份：MCP 数据层据此做看板权限护栏
+    runAsActor(user.id, () => next());
   } catch (err) {
     next(err);
   }

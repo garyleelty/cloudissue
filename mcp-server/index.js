@@ -16,6 +16,7 @@
  */
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
@@ -23,6 +24,25 @@ import { z } from 'zod';
 
 import { pool, query, withTransaction, runSchema, ensureDatabase, closeDb } from './db.js';
 import { STATUSES, STATUS_LABELS, PRIORITIES, ISSUE_TYPES, FAIL_STATUS } from '../shared/constants.js';
+
+/**
+ * 调用者身份上下文（AsyncLocalStorage）。
+ *   · /mcp 入口：server/mcp-http.js 用 authByToken 解析出的用户包裹 handleRequest，
+ *     tool handler 内经 currentActorId() 读取——AI 客户端塞进 JSON-RPC 的任何身份字段都会被覆盖；
+ *   · stdio 入口：HTTP 层的 callTool 把 req.user.id 注入 args.actorId（子进程外部够不着）。
+ * 权限护栏只认这两条可信链路，人与 AI 在数据层同受治理。
+ */
+const actorStorage = new AsyncLocalStorage();
+
+/** HTTP 层注入调用者身份（server/auth.js 的 authRequired 与 server/mcp-http.js 共用同一实例） */
+export function runAsActor(actorId, fn) {
+  return actorStorage.run({ actorId }, fn);
+}
+
+/** @returns {number | null} 当前调用者用户 id；拿不到返回 null */
+export function currentActorId() {
+  return actorStorage.getStore()?.actorId ?? null;
+}
 
 // ------------------------------------------------------------------
 // 工具函数
@@ -35,6 +55,36 @@ const toIsoStr = (v) => (v instanceof Date ? v.toISOString() : v || null);
  * message 透出给用户；非 McpError 的意外异常则按系统故障处理（5xx，不透出细节）。
  */
 const bizError = (message) => new McpError(ErrorCode.InvalidParams, message);
+
+// 角色权限档位：数值越大权限越高
+const ROLE_RANK = { viewer: 1, member: 2, owner: 3 };
+
+/** 查询用户在某看板的角色；无成员关系返回 null */
+async function roleOf(boardId, userId, conn = pool) {
+  if (!userId) return null;
+  const [[row]] = await conn.query('SELECT role FROM board_members WHERE board_id = ? AND user_id = ?', [
+    boardId,
+    userId,
+  ]);
+  return row?.role || null;
+}
+
+/** 权限护栏：不满足所需角色直接抛业务错（HTTP 层映射 400，AI 收到 isError 文本） */
+async function assertRole(boardId, userId, need, conn = pool) {
+  const role = await roleOf(boardId, userId, conn);
+  if (!role) throw bizError('你不是该看板的成员，无权访问');
+  if (ROLE_RANK[role] < ROLE_RANK[need]) {
+    throw bizError(need === 'owner' ? '只有看板所有者可以执行该操作' : '只读成员不能修改该看板');
+  }
+  return role;
+}
+
+/** 用户有成员关系的全部看板 id（board_list 与全量 issue_list 的可见范围） */
+async function memberBoardIds(userId, conn = pool) {
+  if (!userId) return [];
+  const [rows] = await conn.query('SELECT board_id FROM board_members WHERE user_id = ?', [userId]);
+  return rows.map((r) => Number(r.board_id));
+}
 
 /** 归一化标签：支持数组或逗号分隔字符串 */
 function normalizeTags(input) {
@@ -85,11 +135,24 @@ const ISSUE_SELECT = `
     LEFT JOIN boards b ON b.id = i.board_id
 `;
 
-/** 读取看板数据（任务 + 标签 + 状态变更记录 + 评论计数）；boardId 给定时只取该看板 */
-async function fetchBoard(boardId = null, conn = pool) {
-  const [issues] = boardId
-    ? await conn.query(`${ISSUE_SELECT} WHERE i.board_id = ? ORDER BY i.position ASC, i.id ASC`, [boardId])
-    : await conn.query(`${ISSUE_SELECT} ORDER BY i.position ASC, i.id ASC`);
+/** 读取看板数据（任务 + 标签 + 状态变更记录 + 评论计数）。
+ * boardId 给定时只取该看板；否则限定在当前调用者有成员关系的看板内（私有化可见范围）。
+ */
+async function fetchBoard({ boardId = null, actorId = null }, conn = pool) {
+  let sql = `${ISSUE_SELECT}`;
+  const params = [];
+  if (boardId) {
+    sql += ' WHERE i.board_id = ?';
+    params.push(boardId);
+  } else {
+    // 全量拉取限定在调用者有成员关系的看板内（stdio 与 /mcp 都显式传 actorId）
+    const visible = await memberBoardIds(actorId, conn);
+    if (!visible.length) return [];
+    sql += ` WHERE i.board_id IN (${visible.map(() => '?').join(',')})`;
+    params.push(...visible);
+  }
+  sql += ' ORDER BY i.position ASC, i.id ASC';
+  const [issues] = await conn.query(sql, params);
   if (!issues.length) return [];
 
   const ids = issues.map((i) => i.id);
@@ -135,32 +198,31 @@ async function fetchBoard(boardId = null, conn = pool) {
   );
 }
 
-/** boards 行 → 对外 JSON（issueCount 供切换器展示规模） */
+/** boards 行 → 对外 JSON（issueCount 供切换器展示规模；myRole 供前端收敛写操作入口） */
 function shapeBoard(b) {
   return {
     id: Number(b.id),
     name: b.name,
     description: b.description || '',
     issueCount: Number(b.issue_count ?? 0),
+    myRole: b.my_role || null,
     createdAt: toIsoStr(b.created_at),
   };
 }
 
-/** 全部看板（按 position 排序，附带每个看板的任务数） */
-async function fetchBoards(conn = pool) {
+/** 当前调用者可见的看板列表（有成员关系才可见；附带 myRole） */
+async function fetchBoards(actorId, conn = pool) {
   const [rows] = await conn.query(
-    `SELECT b.*, COUNT(i.id) AS issue_count
-       FROM boards b LEFT JOIN issues i ON i.board_id = b.id
-      GROUP BY b.id
+    `SELECT b.*, COUNT(i.id) AS issue_count, bm.role AS my_role
+       FROM board_members bm
+       JOIN boards b ON b.id = bm.board_id
+       LEFT JOIN issues i ON i.board_id = b.id
+      WHERE bm.user_id = ?
+      GROUP BY b.id, bm.role
       ORDER BY b.position ASC, b.id ASC`,
+    [actorId],
   );
   return rows.map(shapeBoard);
-}
-
-/** 校验看板存在；不存在抛业务错（issue_create/issue_update 的 boardId 入口共用） */
-async function assertBoardExists(boardId, conn = pool) {
-  const [[row]] = await conn.query('SELECT id FROM boards WHERE id = ?', [boardId]);
-  if (!row) throw bizError('目标看板不存在');
 }
 
 /** 按 id 读取评论（详情抽屉 / issue_get 用） */
@@ -395,7 +457,12 @@ async function seedIfEmpty(conn) {
  *   · stdio —— HTTP 层内部拉起的子进程（server/index.js 的 MCP Client）；
  *   · Streamable HTTP —— 对外暴露给 AI 客户端（server/mcp-http.js 挂载在 /mcp）。
  */
-export function createBoardServer() {
+export function createBoardServer({ actorId: boundActorId = null } = {}) {
+  // /mcp 入口按请求绑定调用者身份（每请求新建实例，闭包内的身份外部不可触及）；
+  // stdio 入口不绑定，走 args.actorId（由 HTTP 层 callTool 注入）。
+  // AI 客户端塞进 JSON-RPC 的 actorId 只在两者都缺失时才会被读到，因此无法伪造。
+  const effectiveActorId = () => boundActorId ?? currentActorId() ?? null;
+
   const server = new McpServer({
     name: 'cloudissue-data',
     version: '1.0.0',
@@ -443,14 +510,23 @@ export function createBoardServer() {
     },
   );
 
-  // 3) 读取整块看板（boardId 给定时只返回该看板，多看板视图按需拉取）
+  // 3) 读取整块看板（boardId 给定时只返回该看板，需成员关系；不传返回成员看板的全量任务）
   server.registerTool(
     'issue_list',
     {
-      description: '返回任务列表（含标签与状态变更记录）；传 boardId 只取该看板，不传返回全部看板的任务',
-      inputSchema: { boardId: z.number().int().positive().optional().describe('只返回该看板的任务') },
+      description:
+        '返回任务列表（含标签与状态变更记录）；传 boardId 只取该看板（需为该看板成员），不传返回你有成员关系的全部看板的任务',
+      inputSchema: {
+        boardId: z.number().int().positive().optional().describe('只返回该看板的任务'),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
     },
-    async (args) => ok({ issues: await fetchBoard(args?.boardId ?? null) }),
+    async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      const boardId = args?.boardId ?? null;
+      if (boardId) await assertRole(boardId, actorId, 'viewer');
+      return ok({ issues: await fetchBoard({ boardId, actorId }) });
+    },
   );
 
   // 3.5) 读取单条 issue（含评论全文——详情视图用）
@@ -458,11 +534,15 @@ export function createBoardServer() {
     'issue_get',
     {
       description: '按 id 读取单条 issue：字段、标签、变更记录与评论全文',
-      inputSchema: { id: z.number().int().positive() },
+      inputSchema: {
+        id: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
     },
     async (args) => {
       const issue = await fetchIssueById(args.id);
       if (!issue) throw bizError('任务不存在或已被删除');
+      await assertRole(issue.boardId, effectiveActorId() ?? args.actorId ?? null, 'viewer');
       return ok({ issue, comments: await fetchComments(args.id) });
     },
   );
@@ -488,9 +568,11 @@ export function createBoardServer() {
         boardId: z.number().int().positive().optional().default(1).describe('归属看板；缺省为默认看板'),
         failReason: z.string().optional().default(''),
         actor: z.string().max(64).optional().default(''),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
       },
     },
     async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
       const status = args.status ?? 'backlog';
       if (status === FAIL_STATUS && !String(args.failReason || '').trim()) {
         throw bizError('创建到「失败」列的任务必须填写失败原因');
@@ -505,7 +587,7 @@ export function createBoardServer() {
       }
 
       const boardId = args.boardId ?? 1;
-      await assertBoardExists(boardId);
+      await assertRole(boardId, actorId, 'member');
 
       const issue = await withTransaction(async (conn) => {
         const [[{ next }]] = await conn.query(
@@ -566,9 +648,11 @@ export function createBoardServer() {
         failReason: z.string().optional(),
         expectedVersion: ExpectedVersion,
         actor: z.string().max(64).optional().default(''),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
       },
     },
     async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
       // 负责人变更：null=清空指派，数字=校验用户存在；名称冗余同步
       let assigneePatch = { assignee: undefined, assignee_id: undefined };
       if (args.assigneeId !== undefined) {
@@ -584,8 +668,11 @@ export function createBoardServer() {
       }
 
       const updated = await withTransaction(async (conn) => {
-        const [[row]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
+        const [[row]] = await conn.query(`${ISSUE_SELECT} WHERE i.id = ? FOR UPDATE`, [args.id]);
         if (!row) throw bizError('任务不存在或已被删除');
+
+        // 权限护栏：源看板要 member；跨看板移动时目标看板也要 member
+        await assertRole(row.board_id, actorId, 'member', conn);
 
         // 乐观并发闸门：别人已经改过这条任务，拒绝本次提交而不是静默覆盖
         if (args.expectedVersion != null && Number(row.version) !== args.expectedVersion) {
@@ -607,7 +694,7 @@ export function createBoardServer() {
         // 跨看板移动：落到目标看板同状态列的列尾；position 是「看板 × 状态」内的相对序
         let boardPatch = { board_id: row.board_id, position: row.position };
         if (args.boardId !== undefined && args.boardId !== Number(row.board_id)) {
-          await assertBoardExists(args.boardId, conn);
+          await assertRole(args.boardId, actorId, 'member', conn);
           const [[{ next }]] = await conn.query(
             'SELECT COALESCE(MAX(position) + 1, 0) AS next FROM issues WHERE board_id = ? AND status = ?',
             [args.boardId, nextStatus],
@@ -702,12 +789,17 @@ export function createBoardServer() {
         failReason: z.string().optional().default(''),
         expectedVersion: ExpectedVersion,
         actor: z.string().max(64).optional().default(''),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
       },
     },
     async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
       const result = await withTransaction(async (conn) => {
-        const [[issue]] = await conn.query('SELECT * FROM issues WHERE id = ? FOR UPDATE', [args.id]);
+        const [[issue]] = await conn.query(`${ISSUE_SELECT} WHERE i.id = ? FOR UPDATE`, [args.id]);
         if (!issue) throw bizError('任务不存在或已被删除');
+
+        // 权限护栏：只有 member 及以上可以移动卡片
+        await assertRole(issue.board_id, actorId, 'member', conn);
 
         // 两人同时拖同一张卡时，后提交者被告知冲突，而不是覆盖掉前一次移动
         if (args.expectedVersion != null && Number(issue.version) !== args.expectedVersion) {
@@ -728,8 +820,8 @@ export function createBoardServer() {
         }
 
         const [rows] = await conn.query(
-          'SELECT id FROM issues WHERE status = ? ORDER BY position ASC, id ASC',
-          [args.toStatus],
+          'SELECT id FROM issues WHERE board_id = ? AND status = ? ORDER BY position ASC, id ASC',
+          [issue.board_id, args.toStatus],
         );
         const ids = rows.map((r) => r.id).filter((x) => x !== args.id);
 
@@ -789,11 +881,17 @@ export function createBoardServer() {
     'issue_delete',
     {
       description: '删除一个任务（标签与变更记录通过外键级联删除）',
-      inputSchema: { id: z.number().int().positive() },
+      inputSchema: {
+        id: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
     },
     async (args) => {
-      const [res] = await query('DELETE FROM issues WHERE id = ?', [args.id]);
-      if (!res.affectedRows) throw bizError('任务不存在或已被删除');
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      const [[issue]] = await query(`${ISSUE_SELECT} WHERE i.id = ?`, [args.id]);
+      if (!issue) throw bizError('任务不存在或已被删除');
+      await assertRole(issue.board_id, actorId, 'member');
+      await query('DELETE FROM issues WHERE id = ?', [args.id]);
       return ok({ deleted: true, id: args.id });
     },
   );
@@ -813,10 +911,14 @@ export function createBoardServer() {
         boardId: z.number().int().positive().optional().describe('只在该看板内检索'),
         limit: z.number().int().positive().max(200).optional().default(50),
         offset: z.number().int().nonnegative().optional().default(0),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
       },
     },
     async (args) => {
-      let issues = await fetchBoard(args?.boardId ?? null);
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      const boardId = args?.boardId ?? null;
+      if (boardId) await assertRole(boardId, actorId, 'viewer');
+      let issues = await fetchBoard({ boardId, actorId });
 
       if (args.keyword) {
         const kw = args.keyword.toLowerCase();
@@ -850,11 +952,14 @@ export function createBoardServer() {
         body: z.string().min(1, '评论内容不能为空').max(5000),
         authorId: z.number().int().positive().nullable().optional(),
         authorName: z.string().max(64).optional().default(''),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
       },
     },
     async (args) => {
-      const [[issue]] = await query('SELECT id FROM issues WHERE id = ?', [args.issueId]);
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      const [[issue]] = await query(`${ISSUE_SELECT} WHERE i.id = ?`, [args.issueId]);
       if (!issue) throw bizError('任务不存在或已被删除');
+      await assertRole(issue.board_id, actorId, 'member');
       const [res] = await query(
         'INSERT INTO issue_comments (issue_id, author_id, author_name, body) VALUES (?, ?, ?, ?)',
         [args.issueId, args.authorId ?? null, args.authorName || '', args.body.trim()],
@@ -863,7 +968,7 @@ export function createBoardServer() {
     },
   );
 
-  // 7.3) 评论：删除（是否允许由 HTTP 层按作者身份判定后调用）
+  // 7.3) 评论：删除（作者本人校验在 HTTP 层；这里护栏看板 member 权限）
   server.registerTool(
     'issue_comment_delete',
     {
@@ -871,9 +976,14 @@ export function createBoardServer() {
       inputSchema: {
         commentId: z.number().int().positive(),
         issueId: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
       },
     },
     async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      const [[issue]] = await query(`${ISSUE_SELECT} WHERE i.id = ?`, [args.issueId]);
+      if (!issue) throw bizError('任务不存在或已被删除');
+      await assertRole(issue.board_id, actorId, 'member');
       const [res] = await query('DELETE FROM issue_comments WHERE id = ? AND issue_id = ?', [
         args.commentId,
         args.issueId,
@@ -889,11 +999,16 @@ export function createBoardServer() {
     {
       description:
         '返回看板概览：全部看板清单、各列任务数、逾期与今日到期的未完成任务、高优先级未完成任务、最近 5 条状态变更。传 boardId 只统计该看板；理解看板现状请先调用它，再按需 issue_list。',
-      inputSchema: { boardId: z.number().int().positive().optional().describe('只统计该看板') },
+      inputSchema: {
+        boardId: z.number().int().positive().optional().describe('只统计该看板'),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
     },
     async (args) => {
-      const boards = await fetchBoards();
-      const issues = await fetchBoard(args?.boardId ?? null);
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      if (args?.boardId) await assertRole(args.boardId, actorId, 'viewer');
+      const boards = await fetchBoards(actorId);
+      const issues = await fetchBoard({ boardId: args?.boardId ?? null, actorId });
       const today = new Date().toISOString().slice(0, 10);
       const open = issues.filter((i) => i.status !== 'done' && i.status !== 'failed');
 
@@ -945,32 +1060,54 @@ export function createBoardServer() {
   // ------------------------------------------------------------------
 
   // 7.6) 看板列表（切换器与 AI 发现看板的入口）
-  server.registerTool('board_list', { description: '返回全部看板（id/名称/说明/任务数）' }, async () =>
-    ok({ boards: await fetchBoards() }),
+  // 7.6) 看板列表（切换器与 AI 发现看板的入口）：只返回有成员关系的看板
+  server.registerTool(
+    'board_list',
+    {
+      description: '返回你有成员关系的全部看板（id/名称/说明/任务数/myRole）',
+      inputSchema: {
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => ok({ boards: await fetchBoards(effectiveActorId() ?? args.actorId ?? null) }),
   );
 
   // 7.7) 新建看板
   server.registerTool(
     'board_create',
     {
-      description: '新建一个看板（name 唯一）；新看板为空，用 issue_create 指定 boardId 往里建任务',
+      description:
+        '新建一个看板（name 唯一）；创建者自动成为 owner，其他成员需 owner 显式添加。新看板为空，用 issue_create 指定 boardId 往里建任务',
       inputSchema: {
         name: z.string().min(1, '看板名不能为空').max(64),
         description: z.string().max(255).optional().default(''),
         actor: z.string().max(64).optional().default(''),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
       },
     },
     async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      if (!actorId) throw bizError('未识别的调用者身份，无法创建看板');
       const name = args.name.trim();
       if (!name) throw bizError('看板名不能为空');
       try {
-        const [res] = await query('INSERT INTO boards (name, description) VALUES (?, ?)', [
-          name,
-          args.description || '',
-        ]);
-        const [[row]] = await pool.query('SELECT b.*, 0 AS issue_count FROM boards b WHERE b.id = ?', [
-          res.insertId,
-        ]);
+        const boardId = await withTransaction(async (conn) => {
+          const [res] = await conn.query('INSERT INTO boards (name, description) VALUES (?, ?)', [
+            name,
+            args.description || '',
+          ]);
+          // 创建者即 owner：新看板默认私有，其余成员由 owner 显式添加
+          await conn.query('INSERT INTO board_members (board_id, user_id, role) VALUES (?, ?, ?)', [
+            res.insertId,
+            actorId,
+            'owner',
+          ]);
+          return res.insertId;
+        });
+        const [[row]] = await pool.query(
+          'SELECT b.*, 0 AS issue_count, ? AS my_role FROM boards b WHERE b.id = ?',
+          ['owner', boardId],
+        );
         return ok({ created: true, board: shapeBoard(row) });
       } catch (err) {
         if (err && err.code === 'ER_DUP_ENTRY') throw bizError('同名看板已存在');
@@ -979,23 +1116,147 @@ export function createBoardServer() {
     },
   );
 
-  // 7.8) 删除看板（任务级联删除；最后一个看板受保护）
+  // 7.8) 删除看板（任务级联删除；owner 专属；最后一个看板受保护）
   server.registerTool(
     'board_delete',
     {
-      description:
-        '删除一个看板，其下任务连同标签/评论/变更记录一并级联删除；至少保留一个看板，删除最后一个看板会被拒绝',
-      inputSchema: { id: z.number().int().positive() },
+      description: '删除一个看板（owner 专属），其下任务连同标签/评论/变更记录一并级联删除；至少保留一个看板',
+      inputSchema: {
+        id: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
     },
     async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
       const [[board]] = await query('SELECT id, name FROM boards WHERE id = ?', [args.id]);
       if (!board) throw bizError('看板不存在或已被删除');
+      await assertRole(args.id, actorId, 'owner');
 
       const [[{ total }]] = await query('SELECT COUNT(*) AS total FROM boards');
       if (Number(total) <= 1) throw bizError('至少保留一个看板，不能删除最后一个看板');
 
       await query('DELETE FROM boards WHERE id = ?', [args.id]);
       return ok({ deleted: true, id: args.id, name: board.name });
+    },
+  );
+
+  // ------------------------------------------------------------------
+  // 看板成员管理：owner 专属；角色 owner > member > viewer
+  // ------------------------------------------------------------------
+
+  /** 成员行 → 对外 JSON */
+  function shapeMember(m) {
+    return {
+      userId: Number(m.user_id),
+      username: m.username || '',
+      displayName: m.display_name || '',
+      role: m.role,
+      joinedAt: toIsoStr(m.created_at),
+    };
+  }
+
+  // 7.9) 成员列表（任何成员可看，便于协作时确认身份）
+  server.registerTool(
+    'member_list',
+    {
+      description: '返回某看板的成员列表（userId/username/displayName/role）',
+      inputSchema: {
+        boardId: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      await assertRole(args.boardId, actorId, 'viewer');
+      const [rows] = await query(
+        `SELECT bm.*, u.username, u.display_name
+           FROM board_members bm LEFT JOIN users u ON u.id = bm.user_id
+          WHERE bm.board_id = ? ORDER BY bm.created_at ASC, bm.user_id ASC`,
+        [args.boardId],
+      );
+      return ok({ members: rows.map(shapeMember) });
+    },
+  );
+
+  // 7.10) 添加/更新成员（owner 专属；upsert 语义——已存在则改角色）
+  server.registerTool(
+    'member_add',
+    {
+      description:
+        '给看板添加成员或更新其角色（owner 专属）；role 可选 owner/member/viewer。不能把最后一个 owner 降级或移除',
+      inputSchema: {
+        boardId: z.number().int().positive(),
+        userId: z.number().int().positive().describe('目标用户 id'),
+        role: z.enum(['owner', 'member', 'viewer']).optional().default('member'),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      await assertRole(args.boardId, actorId, 'owner');
+
+      const [[user]] = await query('SELECT id, username FROM users WHERE id = ?', [args.userId]);
+      if (!user) throw bizError('目标用户不存在');
+
+      await withTransaction(async (conn) => {
+        // 降级/移除最后一个 owner 会把看板变成孤儿，这里统一拦住
+        const [[{ owners }]] = await conn.query(
+          "SELECT COUNT(*) AS owners FROM board_members WHERE board_id = ? AND role = 'owner'",
+          [args.boardId],
+        );
+        const [[existing]] = await conn.query(
+          'SELECT role FROM board_members WHERE board_id = ? AND user_id = ?',
+          [args.boardId, args.userId],
+        );
+        const isLastOwner = existing?.role === 'owner' && Number(owners) <= 1 && args.role !== 'owner';
+        if (isLastOwner) throw bizError('不能移除或降级最后一个 owner');
+
+        await conn.query(
+          `INSERT INTO board_members (board_id, user_id, role) VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE role = VALUES(role)`,
+          [args.boardId, args.userId, args.role],
+        );
+      });
+
+      return ok({ updated: true, boardId: args.boardId, userId: args.userId, role: args.role });
+    },
+  );
+
+  // 7.11) 移除成员（owner 专属；不能移除最后一个 owner）
+  server.registerTool(
+    'member_remove',
+    {
+      description: '把用户从看板成员中移除（owner 专属；不能移除最后一个 owner）',
+      inputSchema: {
+        boardId: z.number().int().positive(),
+        userId: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      await assertRole(args.boardId, actorId, 'owner');
+
+      await withTransaction(async (conn) => {
+        const [[existing]] = await conn.query(
+          'SELECT role FROM board_members WHERE board_id = ? AND user_id = ?',
+          [args.boardId, args.userId],
+        );
+        if (!existing) throw bizError('该用户不是看板成员');
+        if (existing.role === 'owner') {
+          const [[{ owners }]] = await conn.query(
+            "SELECT COUNT(*) AS owners FROM board_members WHERE board_id = ? AND role = 'owner'",
+            [args.boardId],
+          );
+          if (Number(owners) <= 1) throw bizError('不能移除最后一个 owner');
+        }
+        await conn.query('DELETE FROM board_members WHERE board_id = ? AND user_id = ?', [
+          args.boardId,
+          args.userId,
+        ]);
+      });
+
+      return ok({ removed: true, boardId: args.boardId, userId: args.userId });
     },
   );
 
@@ -1034,6 +1295,12 @@ export function createBoardServer() {
           'INSERT INTO users (username, display_name, password_hash, api_token) VALUES (?, ?, ?, ?)',
           [args.username, args.displayName, args.passwordHash, args.apiToken ?? null],
         );
+        // 新用户自动加入默认看板（board 1）为 member：保证注册后开箱可用，
+        // 其他看板保持私有（由各板 owner 显式添加）
+        await query('INSERT IGNORE INTO board_members (board_id, user_id, role) VALUES (1, ?, ?)', [
+          res.insertId,
+          'member',
+        ]);
         return ok({ created: true, id: res.insertId });
       } catch (err) {
         if (err && err.code === 'ER_DUP_ENTRY') {

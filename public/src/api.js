@@ -72,6 +72,17 @@ export const api = {
   createBoard: (payload) => request('/api/boards', { method: 'POST', body: JSON.stringify(payload) }),
   /** @param {number} id 删除看板，其下任务级联删除 */
   deleteBoard: (id) => request(`/api/boards/${id}`, { method: 'DELETE' }),
+  /** @param {number} boardId 看板成员列表（userId/username/displayName/role） */
+  members: (boardId) => request(`/api/boards/${boardId}/members`),
+  /** @param {{ boardId: number, userId: number, role: string }} p 添加成员或更新角色（owner 专属） */
+  addMember: (p) =>
+    request(`/api/boards/${p.boardId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ userId: p.userId, role: p.role }),
+    }),
+  /** @param {number} boardId @param {number} userId 移除成员（owner 专属） */
+  removeMember: (boardId, userId) =>
+    request(`/api/boards/${boardId}/members/${userId}`, { method: 'DELETE' }),
   /**
    * 导出 CSV：携带当前筛选条件，服务端与看板同口径过滤。
    * 返回 { blob, count, filename }——blob 供下载，count 供 toast 展示。

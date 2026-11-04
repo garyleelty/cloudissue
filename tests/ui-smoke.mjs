@@ -76,9 +76,29 @@ const FIXTURE = [
 ];
 
 /** 看板 fixture：可变的，供新建/删除看板用例模拟服务端状态 */
+const USERS_FIXTURE = [
+  { id: 1, username: 'tester', displayName: '测试用户' },
+  { id: 2, username: 'zhouye', displayName: '周野' },
+];
+const MEMBERS = { 1: [{ userId: 1, username: 'tester', displayName: '测试用户', role: 'owner' }] };
+
 const BOARDS = [
-  { id: 1, name: '默认看板', description: '开箱即用的第一个看板', issueCount: 5, createdAt: iso(90000) },
-  { id: 2, name: '产品规划', description: '长期路线图', issueCount: 0, createdAt: iso(80000) },
+  {
+    id: 1,
+    name: '默认看板',
+    description: '开箱即用的第一个看板',
+    myRole: 'owner',
+    issueCount: 5,
+    createdAt: iso(90000),
+  },
+  {
+    id: 2,
+    name: '产品规划',
+    description: '长期路线图',
+    myRole: 'viewer',
+    issueCount: 0,
+    createdAt: iso(80000),
+  },
 ];
 
 // ---------------------------------------------------------------
@@ -113,14 +133,40 @@ globalThis.fetch = async (url, opts = {}) => {
     return {
       ok: true,
       status: 200,
-      json: async () => ({
-        users: [
-          { id: 1, username: 'tester', displayName: '测试用户' },
-          { id: 2, username: 'zhouye', displayName: '周野' },
-        ],
-      }),
+      json: async () => ({ users: USERS_FIXTURE }),
     };
   }
+  // 成员管理：GET 列表 / POST 添加 / DELETE 移除（内存态，与 BOARDS 一样可变）
+  if (/\/api\/boards\/\d+\/members/.test(u)) {
+    const bid = Number(u.match(/\/api\/boards\/(\d+)\/members/)[1]);
+    if (!MEMBERS[bid])
+      MEMBERS[bid] = [{ userId: 1, username: 'tester', displayName: '测试用户', role: 'owner' }];
+    if (opts?.method === 'POST') {
+      const body = JSON.parse(opts.body);
+      const user = USERS_FIXTURE.find((x) => x.id === body.userId);
+      const existing = MEMBERS[bid].find((m) => m.userId === body.userId);
+      if (existing) existing.role = body.role;
+      else
+        MEMBERS[bid].push({
+          userId: body.userId,
+          username: user?.username || `u${body.userId}`,
+          displayName: user?.displayName || '',
+          role: body.role,
+        });
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({ updated: true, boardId: bid, userId: body.userId, role: body.role }),
+      };
+    }
+    if (opts?.method === 'DELETE') {
+      const uid = Number(u.match(/members\/(\d+)/)[1]);
+      MEMBERS[bid] = MEMBERS[bid].filter((m) => m.userId !== uid);
+      return { ok: true, status: 200, json: async () => ({ removed: true, boardId: bid, userId: uid }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ members: MEMBERS[bid] }) };
+  }
+
   if (u.includes('/api/boards') && !u.includes('/api/issues')) {
     // 看板删除走 /api/boards/:id，先按服务端语义处理再返回
     if (opts?.method === 'DELETE') {
@@ -135,6 +181,7 @@ globalThis.fetch = async (url, opts = {}) => {
         id: Math.max(...BOARDS.map((b) => b.id)) + 1,
         name: body.name,
         description: body.description || '',
+        myRole: 'owner',
         issueCount: 0,
         createdAt: new Date().toISOString(),
       };
@@ -166,7 +213,10 @@ globalThis.fetch = async (url, opts = {}) => {
     return {
       ok: true,
       status: 200,
-      headers: new Headers({ 'Content-Disposition': disposition, 'X-Export-Count': String(FIXTURE.length) }),
+      headers: new Headers({
+        'Content-Disposition': disposition,
+        'X-Export-Count': String(FIXTURE.filter((i) => i.boardId === 1).length),
+      }),
       blob: async () => new Blob(['\uFEFF#编号,标题'], { type: 'text/csv' }),
     };
   }
@@ -733,8 +783,9 @@ console.log('\n--- 多看板 workspace ---');
   );
   check('面板有「新建看板」入口', Boolean(panelBoard.querySelector('[data-board-create]')));
   check(
-    '多于一块看板时每板都有删除入口',
-    panelBoard.querySelectorAll('[data-board-del]').length === 2,
+    '删除入口只出现在 owner 的板上（viewer 板没有）',
+    panelBoard.querySelectorAll('[data-board-del]').length === 1 &&
+      Boolean(panelBoard.querySelector('[data-board-del="1"]')),
     String(panelBoard.querySelectorAll('[data-board-del]').length),
   );
 
@@ -825,6 +876,101 @@ console.log('\n--- 多看板 workspace ---');
 // ------------------------------------------------------------------
 // toast 去重：相同文案不堆叠（轮询失败等场景会连续弹同一条）
 // ------------------------------------------------------------------
+console.log('\n--- 看板成员与权限（前端入口收敛） ---');
+{
+  // viewer 板补一张卡（多看板段已结束，不影响其空板断言）
+  FIXTURE.push(mkIssue(6, { boardId: 2, title: '规划卡A', status: 'planning', position: 0 }));
+  // owner（默认看板）：新建/导出可见，面板有成员管理与删除入口
+  check('owner 可见新建按钮', $('#btnNew').hidden === false);
+  check('owner 可见导出按钮', $('#btnExport').hidden === false);
+  document.querySelector('#boardSwitch .drop-trigger').click();
+  await wait(30);
+  check('owner 面板有成员管理入口', Boolean(document.querySelector('[data-board-members]')));
+
+  // 打开成员管理弹窗：mock 成员 = tester(owner)
+  document.querySelector('[data-board-members]').click();
+  await wait(150);
+  check('成员弹窗打开', $('#modalRoot').hidden === false && !$('#modalMembers').hidden);
+  check(
+    '成员列表渲染 owner 角色',
+    Boolean(document.querySelector('#membersList .member-row .member-role')),
+    $('#membersList').innerHTML.slice(0, 80),
+  );
+  check('owner 可见添加成员行', $('#memberAddRow').hidden === false);
+
+  // 添加成员（周野 → member）→ 列表刷新出现两行
+  $('#memberUser').value = '2';
+  $('#memberAddBtn').click();
+  await wait(150);
+  check(
+    '添加成员后列表刷新',
+    document.querySelectorAll('#membersList .member-row').length === 2,
+    String(document.querySelectorAll('#membersList .member-row').length),
+  );
+
+  // 移除成员（周野）
+  document.querySelector('[data-remove-id="2"]').click();
+  await wait(150);
+  check(
+    '移除成员后列表刷新',
+    document.querySelectorAll('#membersList .member-row').length === 1,
+    String(document.querySelectorAll('#membersList .member-row').length),
+  );
+  document.querySelector('#modalMembers [data-close="1"]').click();
+  await wait(30);
+
+  // 切到 viewer 板：写操作入口全部收敛，只读标识出现
+  document.querySelector('#boardSwitch .drop-trigger').click();
+  await wait(30);
+  document.querySelector('[data-board-id="2"]').click();
+  await wait(150);
+  check('viewer 看板隐藏新建按钮', $('#btnNew').hidden === true);
+  check('viewer 看板隐藏导出按钮', $('#btnExport').hidden === true);
+  check(
+    'viewer 面板无成员管理入口',
+    Boolean(document.querySelector('#panelBoard [data-board-members]')) === false,
+  );
+  check(
+    'viewer 板无删除入口（owner 板不受影响）',
+    Boolean(document.querySelector('[data-board-del="2"]')) === false &&
+      Boolean(document.querySelector('[data-board-del="1"]')),
+  );
+  check(
+    'viewer 卡片无勾选框',
+    document.querySelectorAll('.card-pick').length === 0,
+    String(document.querySelectorAll('.card-pick').length),
+  );
+  check('viewer 卡片无编辑按钮', document.querySelectorAll('[data-act="edit"]').length === 0);
+  check(
+    'viewer 列头无全选框',
+    [...document.querySelectorAll('.col-pick')].every((el) => el.hidden),
+  );
+
+  // viewer 打开抽屉：只读标识、无编辑按钮
+  document.querySelector('.card .card-open').click();
+  await wait(150);
+  check(
+    'viewer 抽屉显示只读标识',
+    Boolean(document.querySelector('.drawer-head-actions .chip')),
+    document.querySelector('.drawer-head-actions')?.textContent.trim(),
+  );
+  check('viewer 抽屉无编辑按钮', Boolean(document.querySelector('[data-drawer-act="edit"]')) === false);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(50);
+
+  // 切回 owner 板：入口恢复
+  document.querySelector('#boardSwitch .drop-trigger').click();
+  await wait(30);
+  document.querySelector('[data-board-id="1"]').click();
+  await wait(150);
+  check('切回 owner 板后新建按钮恢复', $('#btnNew').hidden === false);
+  check(
+    '切回 owner 板后卡片勾选框恢复',
+    document.querySelectorAll('.card-pick').length === 5,
+    String(document.querySelectorAll('.card-pick').length),
+  );
+}
+
 console.log('\n--- toast 去重 ---');
 {
   const toastMod = await import('../public/src/toast.js');

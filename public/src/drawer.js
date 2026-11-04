@@ -7,6 +7,7 @@ import { state } from './state.js';
 import { api } from './api.js';
 import { toast } from './toast.js';
 import { esc, fmtDateTime, dueInfo } from './utils.js';
+import { myRole } from './boards.js';
 import {
   STATUS_LABELS,
   PRIORITY_LABELS,
@@ -168,6 +169,7 @@ function render(issue, comments) {
   const me = state.me || null;
   const typeInfo = ISSUE_TYPE_LABELS[issue.type] || ISSUE_TYPE_LABELS.task;
   const { text: dueText } = dueInfo(issue);
+  const canWrite = myRole() !== 'viewer';
 
   const commentsHtml = comments.length
     ? comments.map((c) => commentItemHtml(c, me)).join('')
@@ -183,7 +185,11 @@ function render(issue, comments) {
         <h2 id="drawerTitle" class="drawer-title">${esc(issue.title)}</h2>
       </div>
       <div class="drawer-head-actions">
-        <button class="btn btn-ghost" type="button" data-drawer-act="edit">编辑</button>
+        ${
+          canWrite
+            ? '<button class="btn btn-ghost" type="button" data-drawer-act="edit">编辑</button>'
+            : '<span class="chip">只读成员</span>'
+        }
         <button class="icon-btn drawer-close" type="button" data-drawer-act="close" aria-label="关闭">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
         </button>

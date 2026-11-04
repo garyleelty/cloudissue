@@ -136,6 +136,34 @@ EXECUTE ci_stmt;
 DEALLOCATE PREPARE ci_stmt;
 
 -- ------------------------------------------------------------
+-- 1.6 看板成员与角色（权限护栏的唯一数据来源，人与 AI 同受约束）
+--     owner：管理成员 / 删除看板；member：读写任务；viewer：只读
+--     必须放在 users 表建表之后（外键引用 users.id）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `board_members` (
+  `board_id`   BIGINT UNSIGNED NOT NULL,
+  `user_id`    BIGINT UNSIGNED NOT NULL,
+  `role`       ENUM('owner','member','viewer') NOT NULL DEFAULT 'member' COMMENT 'owner=管理成员/删板，member=读写，viewer=只读',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '加入时间',
+  PRIMARY KEY (`board_id`, `user_id`),
+  KEY `idx_bm_user` (`user_id`),
+  CONSTRAINT `fk_bm_board` FOREIGN KEY (`board_id`) REFERENCES `boards` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_bm_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='看板成员与角色';
+
+-- 幂等迁移：启用权限前已存在的「看板 × 用户」全部补为 owner。
+-- 目的：老用户零破坏（原本大家共享所有看板，语义保持不变）；
+-- 自本轮之后新建的看板走新语义（创建者 = owner，其余成员显式添加）。
+INSERT INTO `board_members` (`board_id`, `user_id`, `role`)
+SELECT b.id, u.id, 'owner'
+  FROM `boards` b
+  CROSS JOIN `users` u
+ WHERE NOT EXISTS (
+    SELECT 1 FROM `board_members` bm WHERE bm.board_id = b.id
+ )
+ ON DUPLICATE KEY UPDATE `role` = `role`;
+
+-- ------------------------------------------------------------
 -- 2. 标签表（一个任务可有多个标签）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `issue_tags` (

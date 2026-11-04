@@ -73,6 +73,7 @@ export async function loadBoards() {
   }
   $('#boardSwitch').hidden = false;
   renderBoardSwitch();
+  syncWriteUI();
   return true;
 }
 
@@ -84,7 +85,8 @@ export function renderBoardSwitch() {
   const current = state.boards.find((b) => b.id === state.currentBoardId);
   $('#boardLabel').textContent = current ? current.name : '看板';
 
-  const deletable = state.boards.length > 1;
+  // 删除入口按板判定：owner 且（多块板时）才显示；viewer 对他人板无删除权（服务端同拦）
+  const deletable = (b) => b.myRole === 'owner' && state.boards.length > 1;
   const options = state.boards
     .map((b) => {
       const checked = b.id === state.currentBoardId;
@@ -97,7 +99,7 @@ export function renderBoardSwitch() {
           <span class="board-opt-name">${esc(b.name)}</span>
           <span class="board-opt-count">${b.issueCount}</span>
           ${
-            deletable
+            deletable(b)
               ? `<span class="icon-btn board-del" data-board-del="${b.id}" role="button" aria-label="删除看板「${esc(b.name)}」" title="删除该看板及其全部任务">
                   <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
                 </span>`
@@ -111,7 +113,12 @@ export function renderBoardSwitch() {
     options +
     `<button class="drop-opt board-create" type="button" data-board-create="1">
       <span class="board-create-plus">＋</span><span>新建看板</span>
-    </button>`;
+    </button>` +
+    (isOwner()
+      ? `<button class="drop-opt board-members" type="button" data-board-members="1">
+          <span class="board-create-plus">👥</span><span>成员管理</span>
+        </button>`
+      : '');
 }
 
 /**
@@ -128,6 +135,7 @@ export async function switchBoard(id) {
   resetListPageFn();
   closeDrawerFn();
   renderBoardSwitch();
+  syncWriteUI();
   if (onBoardChanged) await onBoardChanged();
 }
 
@@ -145,6 +153,34 @@ export function syncBoardAfterDataChange() {
 /** 是否已选定看板；没有时主流程不应继续拉 issue */
 export function hasBoard() {
   return state.currentBoardId != null;
+}
+
+/**
+ * 当前用户在当前看板的角色（'owner' | 'member' | 'viewer'）。
+ * 板列表还没回来时按 'member' 兜底：写操作交给服务端护栏拦截，
+ * 前端只做入口收敛，绝不放大权限。
+ * @returns {'owner' | 'member' | 'viewer'}
+ */
+export function myRole() {
+  const board = state.boards.find((b) => b.id === state.currentBoardId);
+  return board?.myRole ?? 'member';
+}
+
+/** 是否可写（owner / member）：viewer 收起新建、导出、成员管理等入口 */
+export function canWrite() {
+  return myRole() !== 'viewer';
+}
+
+/** 是否为看板 owner（成员管理入口） */
+export function isOwner() {
+  return myRole() === 'owner';
+}
+
+/** 依据角色收敛写操作入口（新建/导出按钮的显隐），看板切换与数据刷新后调用 */
+export function syncWriteUI() {
+  const write = canWrite();
+  $('#btnNew').hidden = !write;
+  $('#btnExport').hidden = !write || !hasBoard();
 }
 
 /** 关闭看板下拉（Esc / 点击空白处；由 main.js 统一调度） */
@@ -168,6 +204,124 @@ export function openBoardModal() {
   setTimeout(() => form.elements.namedItem('name').focus(), 60);
 }
 
+const ROLE_LABELS = { owner: '所有者', member: '成员', viewer: '只读' };
+
+/**
+ * 成员管理弹窗：owner 可增删改角色；非 owner 只读浏览（服务端护栏兜底）。
+ * 成员列表与可选用户每次打开都拉最新。
+ */
+export async function openMembersModal() {
+  const boardId = state.currentBoardId;
+  if (!boardId) return;
+  $('#modalRoot').hidden = false;
+  [$('#modalForm'), $('#modalConfirm'), $('#modalReason'), $('#modalBoard')].forEach((m) => {
+    m.hidden = true;
+  });
+  $('#modalMembers').hidden = false;
+  $('#membersError').hidden = true;
+
+  const owner = isOwner();
+  $('#membersTitle').textContent = `看板成员 · ${state.boards.find((b) => b.id === boardId)?.name ?? ''}`;
+
+  let members = [];
+  try {
+    members = (await api.members(boardId)).members ?? [];
+  } catch (err) {
+    $('#membersError').textContent = err.message;
+    $('#membersError').hidden = false;
+    return;
+  }
+
+  const roleSelect = (userId, role) => `
+    <select class="member-role" data-user-id="${userId}" ${owner ? '' : 'disabled'}>
+      ${['owner', 'member', 'viewer']
+        .map((r) => `<option value="${r}"${r === role ? ' selected' : ''}>${ROLE_LABELS[r]}</option>`)
+        .join('')}
+    </select>`;
+
+  $('#membersList').innerHTML = members
+    .map(
+      (m) => `
+      <div class="member-row" data-user-id="${m.userId}">
+        <span class="member-name">${esc(m.displayName || m.username)}<em>@${esc(m.username)}</em></span>
+        ${roleSelect(m.userId, m.role)}
+        ${
+          owner
+            ? `<span class="icon-btn member-del" data-remove-id="${m.userId}" role="button" aria-label="移除成员" title="移除该成员">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+              </span>`
+            : ''
+        }
+      </div>`,
+    )
+    .join('');
+
+  // 添加成员：只列还不是成员的用户
+  const memberIds = new Set(members.map((m) => m.userId));
+  const candidates = state.users.filter((u) => !memberIds.has(u.id));
+  $('#memberAddRow').hidden = !owner;
+  $('#memberUser').innerHTML = candidates.length
+    ? candidates
+        .map(
+          (u) => `<option value="${u.id}">${esc(u.displayName || u.username)} @${esc(u.username)}</option>`,
+        )
+        .join('')
+    : '<option value="">所有用户都已在看板中</option>';
+  $('#memberRole').value = 'member';
+  $('#memberAddBtn').disabled = !candidates.length;
+}
+
+/** 成员弹窗内的增删改（事件委托绑定一次） */
+function bindMembersModal() {
+  const modal = $('#modalMembers');
+
+  const reload = () => openMembersModal();
+
+  // 改角色
+  modal.addEventListener('change', async (e) => {
+    const select = e.target.closest('.member-role');
+    if (!select) return;
+    try {
+      await api.addMember({
+        boardId: state.currentBoardId,
+        userId: Number(select.dataset.userId),
+        role: select.value,
+      });
+      toast('角色已更新', 'success');
+      await reload();
+    } catch (err) {
+      toast(err.message, 'error');
+      await reload();
+    }
+  });
+
+  // 移除成员
+  modal.addEventListener('click', async (e) => {
+    const del = e.target.closest('[data-remove-id]');
+    if (!del) return;
+    try {
+      await api.removeMember(state.currentBoardId, Number(del.dataset.removeId));
+      toast('成员已移除', 'success');
+      await reload();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  // 添加成员
+  $('#memberAddBtn').addEventListener('click', async () => {
+    const userId = Number($('#memberUser').value);
+    if (!userId) return;
+    try {
+      await api.addMember({ boardId: state.currentBoardId, userId, role: $('#memberRole').value });
+      toast('成员已添加', 'success');
+      await reload();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+}
+
 /**
  * @param {{ onBoardChanged?: () => Promise<void>, askDeleteBoard?: (board: any) => void, closeDrawer?: () => void, resetListPage?: () => void }} callbacks
  */
@@ -176,6 +330,7 @@ export function initBoards(callbacks = {}) {
   if (callbacks.askDeleteBoard) askDeleteBoardFn = callbacks.askDeleteBoard;
   if (callbacks.closeDrawer) closeDrawerFn = callbacks.closeDrawer;
   if (callbacks.resetListPage) resetListPageFn = callbacks.resetListPage;
+  bindMembersModal();
 
   const sw = $('#boardSwitch');
   const trigger = sw.querySelector('.drop-trigger');
@@ -203,6 +358,14 @@ export function initBoards(callbacks = {}) {
       panel.classList.remove('open');
       trigger.setAttribute('aria-expanded', 'false');
       openBoardModal();
+      return;
+    }
+
+    // 成员管理：owner 专属入口
+    if (e.target.closest('[data-board-members]')) {
+      panel.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+      await openMembersModal();
       return;
     }
 

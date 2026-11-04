@@ -11,7 +11,7 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createBoardServer } from '../mcp-server/index.js';
+import { createBoardServer, runAsActor } from '../mcp-server/index.js';
 import { callTool } from './mcp-client.js';
 import { logger } from './logger.js';
 
@@ -36,8 +36,9 @@ export async function authByToken(req, res, next) {
 export const mcpHttpRouter = Router();
 
 mcpHttpRouter.post('/', async (req, res) => {
-  // 无状态模式：每请求一组全新实例（官方推荐写法），用完即弃
-  const server = createBoardServer();
+  // 无状态模式：每请求一组全新实例（官方推荐写法），用完即弃。
+  // 调用者身份在构造期绑进实例闭包：Bearer Token 解析出的用户，AI 参数无法伪造
+  const server = createBoardServer({ actorId: req.mcpUser?.id ?? null });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
   res.on('close', () => {
@@ -47,7 +48,11 @@ mcpHttpRouter.post('/', async (req, res) => {
 
   try {
     await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    // 调用者身份 = Bearer Token 解析出的用户（authByToken 已挂 req.mcpUser）。
+    // 包进 AsyncLocalStorage 后，tool handler 内的权限护栏读取的就是这条可信链路；
+    // AI 客户端塞进 JSON-RPC 参数里的任何 actorId 都会被这里的身份覆盖，无法伪造。
+    const actorId = req.mcpUser?.id ?? null;
+    await runAsActor(actorId, () => transport.handleRequest(req, res, req.body));
   } catch (err) {
     logger.error({ err: err.message }, 'mcp-http request failed');
     if (!res.headersSent) {
