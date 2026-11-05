@@ -591,3 +591,42 @@ DELETE FROM board_meta WHERE meta_key = 'seeded_at';
 
 **Q：部署在反向代理（nginx）后面要注意什么？**
 设 `TRUST_PROXY=true`（限流按真实客户端 IP 计数）；HTTPS 时设 `COOKIE_SECURE=true`。
+
+---
+
+## 备份与恢复
+
+### 手动备份
+
+```bash
+npm run backup          # mysqldump 导出 + 各表行数 manifest → ./backups/
+```
+
+- 产物：`backups/cloudissue-<时间戳>.sql.gz` + 同名 `.manifest.json`（行数清单）
+- 保留策略：`KEEP_BACKUPS`（默认 14 份），超出自动清理旧档
+- 连接参数取自 `.env`（DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME）
+
+### 恢复验证（强烈建议定期执行）
+
+```bash
+npm run backup:verify -- backups/cloudissue-<时间戳>.sql.gz
+```
+
+脚本会起一个**临时 MySQL 实例**（独立 datadir，不碰生产库），导入备份后做三层校验：
+核心表齐全 → **各表行数与 manifest 逐一比对** → 子表无孤儿行。退出码 0 才算备份可信。
+每次 push，CI 的 `backup-restore` job 都会自动跑一遍这个流程。
+
+### 定时备份（Docker 部署）
+
+```bash
+docker compose --profile tools up -d backup    # 每 6h（BACKUP_INTERVAL 可调）备份到 backups 卷
+docker compose --profile tools run --rm backup /scripts/backup.sh   # 手动触发一次
+```
+
+### 灾难恢复流程
+
+1. `docker compose down`（停止写入）
+2. 重建数据库卷：`docker volume rm cloudissue_mysql-data && docker compose up -d mysql`
+3. 导入备份：`gunzip -c backups/cloudissue-<ts>.sql.gz | docker exec -i cloudissue-mysql mysql -uroot -p<MYSQL_ROOT_PASSWORD> issue_board`
+4. `npm run backup:verify -- backups/cloudissue-<ts>.sql.gz`（对恢复结果再验一遍）
+5. `docker compose up -d app`

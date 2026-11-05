@@ -15,7 +15,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "db:up": "docker compose up -d mysql",
-    "db:down": "docker compose down"
+    "db:down": "docker compose down",
+    "backup": "sh scripts/backup.sh",
+    "backup:verify": "sh scripts/restore-verify.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

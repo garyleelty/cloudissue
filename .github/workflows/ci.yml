@@ -75,6 +75,56 @@ jobs:
         if: failure()
         run: cat server.log
 
+  # 备份可恢复性验证：每次 push 都证明「备份 → 全新实例恢复 → 行数/一致性」走得通
+  backup-restore:
+    runs-on: ubuntu-latest
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '3306'
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: issue_board
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 MySQL 8.4（runner 本机，供临时恢复实例复用 mysqld）
+        uses: shogo82148/actions-setup-mysql@v1
+        with:
+          mysql-version: '8.4'
+          auto-start: true
+          root-password: root
+
+      - name: 建库并初始化结构（经服务端 board_bootstrap）
+        env:
+          JWT_SECRET: ci-only-secret-not-for-production-use
+        run: |
+          mysql -h127.0.0.1 -uroot -proot -e "CREATE DATABASE IF NOT EXISTS issue_board CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS 'issue'@'%' IDENTIFIED BY 'issue_pass'; GRANT ALL ON issue_board.* TO 'issue'@'%';"
+          npm ci --ignore-scripts
+          node server/index.js > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:5173/api/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:5173/api/health || { cat server.log >&2; exit 1; }
+          kill %1 2>/dev/null || true
+
+      - name: 备份
+        run: |
+          set -o pipefail
+          sh scripts/backup.sh 2>&1 | tee /tmp/backup.log || {
+            grep -E "错误|Error" /tmp/backup.log | head -10 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+          ls -la backups/
+
+      - name: 恢复验证（临时实例导入 + manifest 比对 + 孤儿检查）
+        run: |
+          set -o pipefail
+          sh scripts/restore-verify.sh backups/cloudissue-*.sql.gz 2>&1 | tee /tmp/verify.log || {
+            grep -E "FAIL|错误|Error" /tmp/verify.log | head -20 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+
   docker:
     runs-on: ubuntu-latest
     needs: test

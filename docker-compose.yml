@@ -37,5 +37,38 @@ services:
       mysql:
         condition: service_healthy
 
+  # 备份服务：定时 mysqldump 到 backups 卷（默认不启动，随 tools profile 拉起）
+  #   docker compose --profile tools up -d backup
+  # 间隔 BACKUP_INTERVAL 秒（默认 6h）；保留 KEEP_BACKUPS 份；也可手动触发：
+  #   docker compose --profile tools run --rm backup /scripts/backup.sh
+  backup:
+    image: mysql:8.4
+    container_name: cloudissue-backup
+    profiles: ['tools']
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: '3306'
+      BACKUP_DIR: /backups
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-21600}
+      KEEP_BACKUPS: ${KEEP_BACKUPS:-14}
+    volumes:
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
+      - ./backups:/backups
+    depends_on:
+      mysql:
+        condition: service_healthy
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -e
+        chmod +x /scripts/backup.sh 2>/dev/null || true
+        echo "[backup] 定时备份已启动：每 $$BACKUP_INTERVAL 秒，保留 $$KEEP_BACKUPS 份"
+        while true; do
+          /scripts/backup.sh || echo "[backup] 本次备份失败，等待下个周期"
+          sleep "$$BACKUP_INTERVAL"
+        done
+
 volumes:
   mysql-data:
