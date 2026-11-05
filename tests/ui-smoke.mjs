@@ -81,6 +81,38 @@ const USERS_FIXTURE = [
   { id: 2, username: 'zhouye', displayName: '周野' },
 ];
 const MEMBERS = { 1: [{ userId: 1, username: 'tester', displayName: '测试用户', role: 'owner' }] };
+const NOTIFS = [
+  {
+    id: 91,
+    boardId: 1,
+    issueId: 1,
+    type: 'status',
+    title: '「#1 任务1」未规划 → 进行中',
+    actor: 'ai:bot',
+    read: false,
+    createdAt: iso(60000),
+  },
+  {
+    id: 92,
+    boardId: 1,
+    issueId: 2,
+    type: 'comment',
+    title: '「#2 任务2」新评论：请关注',
+    actor: '周野',
+    read: false,
+    createdAt: iso(120000),
+  },
+  {
+    id: 93,
+    boardId: 1,
+    issueId: 3,
+    type: 'assignee',
+    title: '「#3 任务3」指派给你',
+    actor: 'tester',
+    read: true,
+    createdAt: iso(180000),
+  },
+];
 
 const BOARDS = [
   {
@@ -136,6 +168,39 @@ globalThis.fetch = async (url, opts = {}) => {
       json: async () => ({ users: USERS_FIXTURE }),
     };
   }
+  // 站内通知：列表/未读数/单条已读/全部已读（内存态）
+  if (u.includes('/api/notifications')) {
+    if (u.includes('unread_count')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ unreadCount: NOTIFS.filter((n) => !n.read).length }),
+      };
+    }
+    if (opts?.method === 'POST' && /\/read_all$/.test(u)) {
+      NOTIFS.forEach((n) => (n.read = true));
+      return { ok: true, status: 200, json: async () => ({ updated: true, count: NOTIFS.length }) };
+    }
+    if (opts?.method === 'POST' && /\/read$/.test(u)) {
+      const id = Number(u.match(/\/api\/notifications\/(\d+)\/read/)[1]);
+      const target = NOTIFS.find((n) => n.id === id);
+      if (target) target.read = true;
+      return { ok: true, status: 200, json: async () => ({ updated: true, id }) };
+    }
+    const onlyUnread = u.includes('onlyUnread=1');
+    const rows = onlyUnread ? NOTIFS.filter((n) => !n.read) : NOTIFS;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        notifications: rows.slice(0, 10),
+        unreadCount: NOTIFS.filter((n) => !n.read).length,
+        limit: 20,
+        offset: 0,
+      }),
+    };
+  }
+
   // 成员管理：GET 列表 / POST 添加 / DELETE 移除（内存态，与 BOARDS 一样可变）
   if (/\/api\/boards\/\d+\/members/.test(u)) {
     const bid = Number(u.match(/\/api\/boards\/(\d+)\/members/)[1]);
@@ -1260,6 +1325,60 @@ console.log('\n--- 泳道（列内按标签/负责人分组） ---');
     `${document.querySelectorAll('.column[data-status="backlog"] .card').length} cards`,
   );
   check('泳道偏好持久化', window.localStorage.getItem('issue-board:laneDim') === 'none');
+}
+
+console.log('\n--- 站内通知（铃铛/未读徽标/已读） ---');
+{
+  // 登录后铃铛可见，徽标显示未读数（2 条未读）
+  check('登录后铃铛可见', $('#notifRoot').hidden === false);
+  check(
+    '未读徽标显示 2',
+    $('#notifBadge').hidden === false && $('#notifBadge').textContent === '2',
+    $('#notifBadge').textContent,
+  );
+
+  // 打开面板：列表渲染 + 未读样式
+  document.querySelector('.notif-trigger').click();
+  await wait(200);
+  check('通知面板打开', document.querySelector('#notifPanel').classList.contains('open'));
+  const items = [...document.querySelectorAll('#notifList .notif-item')];
+  check('通知列表渲染 3 条', items.length === 3, String(items.length));
+  check(
+    '未读条目带 unread 样式',
+    items.filter((i) => i.classList.contains('unread')).length === 2,
+    String(items.filter((i) => i.classList.contains('unread')).length),
+  );
+  check(
+    '通知标题渲染',
+    items[0].querySelector('.notif-title')?.textContent.includes('未规划 → 进行中'),
+    items[0].querySelector('.notif-title')?.textContent,
+  );
+  check(
+    'AI actor 快照展示',
+    items[0].querySelector('.notif-meta')?.textContent.includes('ai:bot'),
+    items[0].querySelector('.notif-meta')?.textContent,
+  );
+
+  // 点单条 → 已读 + 跳转抽屉（boardId=1 与当前一致，直接开抽屉）
+  items[0].click();
+  await wait(200);
+  check('点击通知标记已读并打开抽屉', document.querySelector('#drawerRoot').hidden === false);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(50);
+  check('点击后徽标减一', $('#notifBadge').textContent === '1', $('#notifBadge').textContent);
+
+  // 全部已读 → 徽标消失
+  document.querySelector('.notif-trigger').click();
+  await wait(150);
+  $('#notifReadAll').click();
+  await wait(200);
+  check('全部已读后徽标消失', $('#notifBadge').hidden === true, String($('#notifBadge').hidden));
+  check(
+    '列表内不再有未读条目',
+    [...document.querySelectorAll('#notifList .notif-item')].every((i) => !i.classList.contains('unread')),
+  );
+  document.body.click();
+  await wait(30);
 }
 
 console.log('\n--- toast 去重 ---');

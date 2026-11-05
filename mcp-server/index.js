@@ -86,6 +86,45 @@ async function memberBoardIds(userId, conn = pool) {
   return rows.map((r) => Number(r.board_id));
 }
 
+/**
+ * 给看板成员产生站内通知（排除操作者本人；标题去重防同一动作重复入站）。
+ * 写操作（issue_update/issue_move/issue_comment_add）在事务/写路径尾部调用；
+ * AI 与人同源——actorId 来自双可信链路，无法伪造他人的身份发通知。
+ * @param {{ boardId: number, issueId: number, actorId: number | null, actorName: string, type: 'status' | 'assignee' | 'comment', title: string, extraUserIds?: number[] }} p
+ */
+async function notifyUsers(p) {
+  const { boardId, issueId, actorId, actorName, type, title, extraUserIds = [] } = p;
+  const [rows] = await pool.query('SELECT user_id FROM board_members WHERE board_id = ?', [boardId]);
+  const targets = new Set(rows.map((r) => Number(r.user_id)));
+  for (const uid of extraUserIds) targets.add(Number(uid));
+  targets.delete(Number(actorId)); // 操作者本人不收自己的动作
+  targets.delete(NaN);
+  for (const userId of targets) {
+    await query(
+      `INSERT INTO notifications (user_id, board_id, issue_id, type, title, actor)
+       SELECT ?, ?, ?, ?, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM notifications
+          WHERE board_id = ? AND issue_id = ? AND type = ? AND actor = ?
+            AND created_at >= NOW() - INTERVAL 1 MINUTE
+       )`,
+      [
+        userId,
+        boardId,
+        issueId,
+        type,
+        title.slice(0, 255),
+        actorName || '',
+        boardId,
+        issueId,
+        type,
+        actorName || '',
+      ],
+    );
+  }
+  return targets.size;
+}
+
 /** 归一化标签：支持数组或逗号分隔字符串 */
 function normalizeTags(input) {
   const list = Array.isArray(input)
@@ -623,6 +662,26 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
         return id;
       });
 
+      // 站内通知：创建时已指派 → 被指派人直达（排除创建者）
+      try {
+        if (args.assigneeId != null) {
+          const created = await fetchIssueById(issue);
+          if (created) {
+            await notifyUsers({
+              boardId: boardId,
+              issueId: issue,
+              actorId,
+              actorName: args.actor,
+              type: 'assignee',
+              title: `「#${issue} ${created.title}」指派给你`,
+              extraUserIds: [args.assigneeId],
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[cloudissue-mcp] notify failed:', err.message);
+      }
+
       const [rows] = await pool.query(`${ISSUE_SELECT} WHERE i.id = ?`, [issue]);
       return ok({ created: true, id: issue, issue: (await fetchIssueById(issue)) ?? rows[0] });
     },
@@ -755,7 +814,17 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
             ],
           );
         }
-        return { updated: true };
+        return {
+          updated: true,
+          boardId: Number(row.board_id),
+          title: row.title,
+          prevStatus: row.status,
+          nextStatus,
+          statusChanged,
+          assigneeChanged:
+            assigneePatch.assignee_id !== undefined && assigneePatch.assignee_id !== row.assignee_id,
+          newAssigneeId: assigneePatch.assignee_id,
+        };
       });
 
       if (updated.conflict) {
@@ -765,6 +834,34 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
           currentVersion: updated.currentVersion,
           issue: await fetchIssueById(args.id),
         });
+      }
+
+      // 站内通知：状态流转（全员）与指派（新负责人，即使他不是看板成员也直达）
+      try {
+        const issueTitle = `#${args.id} ${updated.title}`;
+        if (updated.statusChanged) {
+          await notifyUsers({
+            boardId: updated.boardId,
+            issueId: args.id,
+            actorId,
+            actorName: args.actor,
+            type: 'status',
+            title: `「${issueTitle}」${STATUS_LABELS[updated.prevStatus] || updated.prevStatus} → ${STATUS_LABELS[updated.nextStatus] || updated.nextStatus}`,
+          });
+        }
+        if (updated.assigneeChanged && updated.newAssigneeId != null) {
+          await notifyUsers({
+            boardId: updated.boardId,
+            issueId: args.id,
+            actorId,
+            actorName: args.actor,
+            type: 'assignee',
+            title: `「${issueTitle}」指派给你`,
+            extraUserIds: [updated.newAssigneeId],
+          });
+        }
+      } catch (err) {
+        console.error('[cloudissue-mcp] notify failed:', err.message);
       }
 
       return ok({ updated: true, issue: await fetchIssueById(args.id) });
@@ -872,6 +969,25 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
         });
       }
 
+      if (result.statusChanged) {
+        try {
+          const movedIssue = await fetchIssueById(args.id);
+          const boardId = movedIssue ? movedIssue.boardId : null;
+          if (boardId) {
+            await notifyUsers({
+              boardId,
+              issueId: args.id,
+              actorId,
+              actorName: args.actor,
+              type: 'status',
+              title: `「#${args.id} ${movedIssue.title}」${STATUS_LABELS[result.fromStatus] || result.fromStatus} → ${STATUS_LABELS[result.toStatus] || result.toStatus}`,
+            });
+          }
+        } catch (err) {
+          console.error('[cloudissue-mcp] notify failed:', err.message);
+        }
+      }
+
       return ok({ moved: true, ...result });
     },
   );
@@ -964,6 +1080,24 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
         'INSERT INTO issue_comments (issue_id, author_id, author_name, body) VALUES (?, ?, ?, ?)',
         [args.issueId, args.authorId ?? null, args.authorName || '', args.body.trim()],
       );
+      // 站内通知：评论提醒看板成员 + 当前指派对象（直达），排除评论者本人
+      try {
+        const [[issue]] = await query(`${ISSUE_SELECT} WHERE i.id = ?`, [args.issueId]);
+        if (issue) {
+          const excerpt = args.body.trim().replace(/\s+/g, ' ').slice(0, 50);
+          await notifyUsers({
+            boardId: Number(issue.board_id),
+            issueId: args.issueId,
+            actorId,
+            actorName: args.authorName,
+            type: 'comment',
+            title: `「#${args.issueId} ${issue.title}」新评论：${excerpt}`,
+            extraUserIds: issue.assignee_id != null ? [Number(issue.assignee_id)] : [],
+          });
+        }
+      } catch (err) {
+        console.error('[cloudissue-mcp] notify failed:', err.message);
+      }
       return ok({ created: true, id: res.insertId, comments: await fetchComments(args.issueId) });
     },
   );
@@ -1219,6 +1353,119 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
       });
 
       return ok({ updated: true, boardId: args.boardId, userId: args.userId, role: args.role });
+    },
+  );
+
+  // ------------------------------------------------------------------
+  // 站内通知：接收人=自己（用户维度隔离，无越权面）；actor 快照含 AI 自报名
+  // ------------------------------------------------------------------
+
+  function shapeNotification(n) {
+    return {
+      id: Number(n.id),
+      boardId: Number(n.board_id),
+      issueId: Number(n.issue_id),
+      type: n.type,
+      title: n.title,
+      actor: n.actor || '',
+      read: n.read_at != null,
+      readAt: toIsoStr(n.read_at),
+      createdAt: toIsoStr(n.created_at),
+    };
+  }
+
+  // 7.12) 通知列表（只返回当前调用者的；分页 + 可选只看未读）
+  server.registerTool(
+    'notification_list',
+    {
+      description: '返回当前用户的通知（最新在前），可只看未读；带 unreadCount 汇总',
+      inputSchema: {
+        onlyUnread: z.boolean().optional().default(false),
+        limit: z.number().int().positive().max(100).optional().default(20),
+        offset: z.number().int().nonnegative().optional().default(0),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      if (!actorId) throw bizError('未识别的调用者身份');
+      const [rows] = await query(
+        `SELECT * FROM notifications WHERE user_id = ? ${args.onlyUnread ? 'AND read_at IS NULL' : ''}
+          ORDER BY id DESC LIMIT ? OFFSET ?`,
+        [actorId, args.limit, args.offset],
+      );
+      const [[{ unread }]] = await query(
+        'SELECT COUNT(*) AS unread FROM notifications WHERE user_id = ? AND read_at IS NULL',
+        [actorId],
+      );
+      return ok({
+        notifications: rows.map(shapeNotification),
+        unreadCount: Number(unread),
+        limit: args.limit,
+        offset: args.offset,
+      });
+    },
+  );
+
+  // 7.13) 未读数（顶栏徽标轮询用，轻量）
+  server.registerTool(
+    'notification_unread_count',
+    {
+      description: '当前用户的未读通知数',
+      inputSchema: {
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      if (!actorId) throw bizError('未识别的调用者身份');
+      const [[{ unread }]] = await query(
+        'SELECT COUNT(*) AS unread FROM notifications WHERE user_id = ? AND read_at IS NULL',
+        [actorId],
+      );
+      return ok({ unreadCount: Number(unread) });
+    },
+  );
+
+  // 7.14) 标记单条已读（只能读自己的通知）
+  server.registerTool(
+    'notification_read',
+    {
+      description: '把一条通知标记为已读（只能操作自己的通知）',
+      inputSchema: {
+        id: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      if (!actorId) throw bizError('未识别的调用者身份');
+      const [res] = await query(
+        'UPDATE notifications SET read_at = NOW() WHERE id = ? AND user_id = ? AND read_at IS NULL',
+        [args.id, actorId],
+      );
+      if (!res.affectedRows) throw bizError('通知不存在或已读');
+      return ok({ updated: true, id: args.id });
+    },
+  );
+
+  // 7.15) 全部已读
+  server.registerTool(
+    'notification_read_all',
+    {
+      description: '把当前用户的全部未读通知标记为已读，返回已读条数',
+      inputSchema: {
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      if (!actorId) throw bizError('未识别的调用者身份');
+      const [res] = await query(
+        'UPDATE notifications SET read_at = NOW() WHERE user_id = ? AND read_at IS NULL',
+        [actorId],
+      );
+      return ok({ updated: true, count: res.affectedRows });
     },
   );
 

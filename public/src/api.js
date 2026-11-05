@@ -72,6 +72,17 @@ export const api = {
   createBoard: (payload) => request('/api/boards', { method: 'POST', body: JSON.stringify(payload) }),
   /** @param {number} id 删除看板，其下任务级联删除 */
   deleteBoard: (id) => request(`/api/boards/${id}`, { method: 'DELETE' }),
+  /** 通知列表（只返回当前用户的） */
+  notifications: (params = {}) => {
+    const qs = new URLSearchParams();
+    if (params.onlyUnread) qs.set('onlyUnread', '1');
+    if (params.limit) qs.set('limit', String(params.limit));
+    return request(`/api/notifications${qs.size ? `?${qs}` : ''}`);
+  },
+  unreadCount: () => request('/api/notifications/unread_count'),
+  /** @param {number} id */
+  readNotification: (id) => request(`/api/notifications/${id}/read`, { method: 'POST' }),
+  readAllNotifications: () => request('/api/notifications/read_all', { method: 'POST' }),
   /** @param {number} boardId 看板成员列表（userId/username/displayName/role） */
   members: (boardId) => request(`/api/boards/${boardId}/members`),
   /** @param {{ boardId: number, userId: number, role: string }} p 添加成员或更新角色（owner 专属） */

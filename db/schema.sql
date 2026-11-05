@@ -164,6 +164,28 @@ SELECT b.id, u.id, 'owner'
  ON DUPLICATE KEY UPDATE `role` = `role`;
 
 -- ------------------------------------------------------------
+-- 1.7 站内通知（状态流转/指派/评论时对看板成员产生；接收人=成员，排除操作者）
+--     actor 存展示名快照（人/机器人一致），读态用 read_at（NULL=未读）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `notifications` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id`    BIGINT UNSIGNED NOT NULL COMMENT '接收人',
+  `board_id`   BIGINT UNSIGNED NOT NULL,
+  `issue_id`   BIGINT UNSIGNED NOT NULL,
+  `type`       ENUM('status','assignee','comment') NOT NULL COMMENT '通知类型',
+  `title`      VARCHAR(255)    NOT NULL COMMENT '快照文案（含 #编号/标题/动作）',
+  `actor`      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '操作者展示名快照（人/AI 一致）',
+  `read_at`    DATETIME        NULL COMMENT '已读时间；NULL=未读',
+  `created_at` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '产生时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_notif_user` (`user_id`, `read_at`, `id`),
+  KEY `idx_notif_issue` (`issue_id`),
+  CONSTRAINT `fk_notif_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_notif_board` FOREIGN KEY (`board_id`) REFERENCES `boards` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_notif_issue` FOREIGN KEY (`issue_id`) REFERENCES `issues` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='站内通知';
+
+-- ------------------------------------------------------------
 -- 2. 标签表（一个任务可有多个标签）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `issue_tags` (

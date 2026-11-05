@@ -111,6 +111,7 @@ app.use('/api/issues', authRequired);
 app.use('/api/users', authRequired);
 app.use('/api/comments', authRequired);
 app.use('/api/boards', authRequired);
+app.use('/api/notifications', authRequired);
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
 
@@ -179,6 +180,44 @@ app.delete(
       return res.status(400).json({ error: '非法的看板 ID' });
     }
     const data = await callTool('board_delete', { id });
+    res.json(data);
+  }),
+);
+
+// 站内通知：只操作当前登录用户自己的数据（用户维度隔离，无越权面）
+app.get(
+  '/api/notifications',
+  asyncHandler(async (req, res) => {
+    const limit = Number(req.query.limit) || 20;
+    const offset = Number(req.query.offset) || 0;
+    const onlyUnread = req.query.onlyUnread === '1';
+    const data = await callTool('notification_list', { onlyUnread, limit, offset });
+    res.json(data);
+  }),
+);
+
+app.get(
+  '/api/notifications/unread_count',
+  asyncHandler(async (_req, res) => {
+    const data = await callTool('notification_unread_count', {});
+    res.json(data);
+  }),
+);
+
+app.post(
+  '/api/notifications/read_all',
+  asyncHandler(async (_req, res) => {
+    const data = await callTool('notification_read_all', {});
+    res.json(data);
+  }),
+);
+
+app.post(
+  '/api/notifications/:id/read',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '非法的通知 ID' });
+    const data = await callTool('notification_read', { id });
     res.json(data);
   }),
 );

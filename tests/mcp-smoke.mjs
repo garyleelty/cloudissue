@@ -22,6 +22,11 @@ const EXPECTED = [
   'member_list',
   'member_add',
   'member_remove',
+  // 站内通知
+  'notification_list',
+  'notification_unread_count',
+  'notification_read',
+  'notification_read_all',
   'issue_list',
   'issue_get',
   'issue_search',

@@ -1171,6 +1171,146 @@ async function main() {
   const delPermBoard = await withJar(jarA, () => del(`/api/boards/${pbId}`));
   check('清理权限测试看板', delPermBoard.status === 200, JSON.stringify(delPermBoard.data));
 
+  console.log('\n--- 20. 站内通知（状态流转/指派/评论 → 成员） ---');
+  // 复用第 19 节的 A/B/C 用户（pbId 板已清理）；建一块通知专用板
+  const ntBoard = await withJar(jarA, () => post('/api/boards', { name: `通知板_${uniq}` }));
+  const ntBd = ntBoard.data.board?.id;
+  await withJar(jarA, () => post(`/api/boards/${ntBd}/members`, { userId: UB.id, role: 'member' }));
+  await withJar(jarA, () => post(`/api/boards/${ntBd}/members`, { userId: UC.id, role: 'viewer' }));
+  check('通知专用板就绪（A owner/B member/C viewer）', Number.isInteger(ntBd), JSON.stringify(ntBoard.data));
+
+  // B 移动卡 → A 收到 status 通知，B 不收（操作者排除）
+  const bCard2 = await withJar(jarB, () => post('/api/issues', { title: `通知卡_${uniq}`, boardId: ntBd }));
+  const ntCardId = bCard2.data.id;
+  const bMove = await withJar(jarB, () => post(`/api/issues/${ntCardId}/move`, { toStatus: 'planning' }));
+  check('B 移卡成功（通知前置）', bMove.status === 200, JSON.stringify(bMove.data));
+  const aNotifs = await withJar(jarA, () => api('/api/notifications'));
+  const aStatus = (aNotifs.data.notifications || []).find(
+    (n) => n.issueId === ntCardId && n.type === 'status',
+  );
+  check(
+    'owner 收到状态流转通知',
+    Boolean(aStatus) && /未规划 → 规划中/.test(aStatus.title) && aStatus.actor === `perm_b_${uniq}`,
+    JSON.stringify(aNotifs.data.notifications?.[0]).slice(0, 140),
+  );
+  const bNotifs = await withJar(jarB, () => api('/api/notifications'));
+  check(
+    '操作者本人不收自己的动作',
+    !(bNotifs.data.notifications || []).some((n) => n.issueId === ntCardId && n.type === 'status'),
+    JSON.stringify(bNotifs.data.notifications?.slice(0, 2)).slice(0, 140),
+  );
+
+  // A 指派卡给 B → B 收到 assignee 通知（member 直达）
+  const aAssign = await withJar(jarA, () => put(`/api/issues/${ntCardId}`, { assigneeId: UB.id }));
+  check('A 指派卡给 B 成功', aAssign.status === 200, JSON.stringify(aAssign.data).slice(0, 120));
+  const bAfterAssign = await withJar(jarB, () => api('/api/notifications'));
+  const bAssigned = (bAfterAssign.data.notifications || []).find(
+    (n) => n.type === 'assignee' && n.issueId === ntCardId,
+  );
+  check(
+    '被指派人收到指派通知',
+    Boolean(bAssigned) && /指派给你/.test(bAssigned.title),
+    JSON.stringify(bAssigned).slice(0, 140),
+  );
+
+  // viewer 评论被拒（只读护栏对评论同样生效）
+  const cComment = await withJar(jarC, () =>
+    post(`/api/issues/${ntCardId}/comments`, { body: 'viewer越权评论' }),
+  );
+  check(
+    'viewer 评论被拒（只读护栏覆盖评论）',
+    cComment.status === 400 && /只读成员/.test(cComment.data.error || ''),
+    JSON.stringify(cComment.data),
+  );
+
+  // B（member）评论 → A/C 收到 comment 通知；B 本人不收
+  const bComment = await withJar(jarB, () =>
+    post(`/api/issues/${ntCardId}/comments`, { body: `请关注这条评论_${uniq}` }),
+  );
+  check('B 评论成功', bComment.status === 201, JSON.stringify(bComment.data).slice(0, 120));
+  const aAfterComment = await withJar(jarA, () => api('/api/notifications'));
+  check(
+    '成员收到评论通知（含摘要与评论者）',
+    (aAfterComment.data.notifications || []).some(
+      (n) =>
+        n.type === 'comment' &&
+        n.issueId === ntCardId &&
+        n.actor === `perm_b_${uniq}` &&
+        n.title.includes(`请关注这条评论_${uniq}`.slice(0, 20)),
+    ),
+    JSON.stringify(aAfterComment.data.notifications?.[0]).slice(0, 160),
+  );
+  const bNotifsAfterComment = await withJar(jarB, () => api('/api/notifications'));
+  check(
+    '评论者本人不收自己的评论通知',
+    !(bNotifsAfterComment.data.notifications || []).some(
+      (n) => n.type === 'comment' && n.issueId === ntCardId,
+    ),
+  );
+
+  // AI 操作也触发通知（A 的 token 移动卡 → A 不收自己的，B 收到 actor=ai:xxx）
+  const aiMove = await mcpCall(aiToken, 50, 'tools/call', {
+    name: 'issue_move',
+    arguments: { id: ntCardId, toStatus: 'done', actor: 'ai:notify-bot' },
+  });
+  check(
+    'AI 移卡成功（通知前置）',
+    jsonContent(aiMove.data)?.moved === true,
+    (aiMove.data?.result?.content?.[0]?.text || '').slice(0, 120),
+  );
+  const bAfterAi = await withJar(jarB, () => api('/api/notifications'));
+  const aiNotif = (bAfterAi.data.notifications || []).find(
+    (n) => n.type === 'status' && n.issueId === ntCardId,
+  );
+  check(
+    '成员收到 AI 操作的通知（actor 快照为自报名）',
+    Boolean(aiNotif) && aiNotif.actor === 'ai:notify-bot' && /规划中 → 已完成/.test(aiNotif.title),
+    JSON.stringify(aiNotif).slice(0, 160),
+  );
+
+  // 未读数 / 单条已读 / 全部已读 / 用户隔离
+  const aUnreadBefore = await withJar(jarA, () => api('/api/notifications/unread_count'));
+  check(
+    '未读数端点',
+    Number.isInteger(aUnreadBefore.data?.unreadCount) && aUnreadBefore.data.unreadCount >= 2,
+    String(aUnreadBefore.data?.unreadCount),
+  );
+  const firstUnread = (aNotifs.data.notifications || []).find((n) => !n.read);
+  const markRead = await withJar(jarA, () => post(`/api/notifications/${firstUnread.id}/read`));
+  check(
+    '单条已读成功',
+    markRead.status === 200 && markRead.data.updated === true,
+    JSON.stringify(markRead.data),
+  );
+  const markAgain = await withJar(jarA, () => post(`/api/notifications/${firstUnread.id}/read`));
+  check('重复已读被拒（幂等护栏）', markAgain.status === 400, String(markAgain.status));
+  const readAll = await withJar(jarA, () => post('/api/notifications/read_all'));
+  check(
+    '全部已读成功',
+    readAll.status === 200 && Number.isInteger(readAll.data.count),
+    JSON.stringify(readAll.data),
+  );
+  const aUnreadAfter = await withJar(jarA, () => api('/api/notifications/unread_count'));
+  check('全部已读后未读数归零', aUnreadAfter.data.unreadCount === 0, String(aUnreadAfter.data.unreadCount));
+  const bUnread = await withJar(jarB, () => api('/api/notifications/unread_count'));
+  check('用户隔离（A 已读不影响 B 的未读）', bUnread.data.unreadCount > 0, String(bUnread.data.unreadCount));
+
+  // 分页
+  const paged = await withJar(jarB, () => api('/api/notifications?limit=1&offset=0'));
+  check(
+    '通知列表分页与未读汇总',
+    (paged.data.notifications || []).length === 1 && Number.isInteger(paged.data.unreadCount),
+    JSON.stringify({ n: paged.data.notifications?.length, unread: paged.data.unreadCount }),
+  );
+
+  // 删卡级联删通知
+  const delNb2 = await withJar(jarA, () => del(`/api/issues/${ntCardId}`));
+  check('删除通知测试卡', delNb2.status === 200);
+  const aAfterDel = await withJar(jarA, () => api('/api/notifications'));
+  check('删卡后相关通知级联消失', !(aAfterDel.data.notifications || []).some((n) => n.issueId === ntCardId));
+  const delNtBoard = await withJar(jarA, () => del(`/api/boards/${ntBd}`));
+  check('清理通知测试看板', delNtBoard.status === 200, JSON.stringify(delNtBoard.data));
+
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
   console.log(`=====================================\n`);

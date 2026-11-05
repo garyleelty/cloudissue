@@ -50,6 +50,7 @@ import { initListView, renderList, resetListPage } from './listview.js';
 import { downloadBlob } from './utils.js';
 import { STATUSES, STATUS_LABELS, FAIL_STATUS, MOBILE_BREAKPOINT } from '../../shared/constants.js';
 import { LANE_DIMS, LANE_DIM_LABELS } from '../../shared/swimlane.js';
+import { initNotifications, refreshUnread, refreshNotificationsSoon, showNotifUI } from './notifications.js';
 
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
@@ -67,6 +68,7 @@ async function load() {
     syncDropdowns();
     notify();
     refreshDrawer();
+    refreshNotificationsSoon();
   } catch (err) {
     // 401 已由 ci:unauthorized 统一切到登录视图，这里不重复打扰
     if (err.status !== 401) toast(`加载失败：${err.message}`, 'error');
@@ -128,6 +130,7 @@ function showAuth() {
   state.currentBoardId = null;
   closeDrawer();
   $('#boardSwitch').hidden = true;
+  showNotifUI(false);
   syncWriteUI();
   authView.hidden = false;
   $('#userChip').hidden = true;
@@ -137,7 +140,7 @@ function showAuth() {
   authView.querySelector('[name="username"]')?.focus();
 }
 
-function showBoard(user) {
+async function showBoard(user) {
   state.me = user;
   authView.hidden = true;
   const chip = $('#userChip');
@@ -146,6 +149,8 @@ function showBoard(user) {
   chip.hidden = false;
   $('#btnLogout').hidden = false;
   // 先看板列表、后任务：load 依赖 currentBoardId，顺序不能反
+  showNotifUI(true);
+  await refreshUnread();
   loadBoards().then((ok) => {
     syncWriteUI();
     if (ok) load();
@@ -467,6 +472,7 @@ async function init() {
     closeDrawer,
     resetListPage: resetListPage,
   });
+  initNotifications();
   bindDropdowns();
   bindGlobalEvents();
   bindBatchBar();
@@ -480,9 +486,13 @@ async function init() {
     renderList();
   });
 
-  // 健康状态周期性刷新，链路断了状态灯能自己翻红
+  // 健康状态周期性刷新，链路断了状态灯能自己翻红；顺带轮询未读通知数（省一套定时器）
   await checkHealth();
-  setInterval(checkHealth, 30_000);
+  await refreshUnread();
+  setInterval(() => {
+    checkHealth();
+    refreshUnread();
+  }, 30_000);
 
   // 先探测登录态：未登录只亮登录视图，不带出看板数据的 401 报错
   const me = await api

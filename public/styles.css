@@ -522,6 +522,121 @@ textarea {
 }
 
 /* ==========================================================================
+   顶栏通知（铃铛 + 未读徽标 + 下拉）
+   ========================================================================== */
+.notif {
+  position: relative;
+}
+.notif-trigger {
+  position: relative;
+  padding: 0 10px;
+  height: 34px;
+}
+.notif-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+.notif-panel {
+  right: 0;
+  left: auto;
+  width: 340px;
+  max-height: 420px;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.notif-panel.open {
+  display: flex;
+}
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+}
+.notif-head .btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+.notif-list {
+  overflow-y: auto;
+  padding: 6px;
+}
+.notif-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s var(--ease);
+}
+.notif-item:hover {
+  background: var(--surface-sunken);
+}
+.notif-item.unread {
+  background: var(--blue-soft);
+}
+.notif-item.unread:hover {
+  background: rgba(0, 113, 227, 0.14);
+}
+.notif-icon {
+  flex: none;
+  font-size: 14px;
+  line-height: 20px;
+}
+.notif-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notif-title {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.45;
+  word-break: break-word;
+}
+.notif-meta {
+  font-size: 11px;
+  color: var(--text-4);
+}
+.notif-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--blue);
+}
+.notif-empty {
+  padding: 24px 10px;
+  font-size: 12.5px;
+  color: var(--text-4);
+  text-align: center;
+}
+
+/* ==========================================================================
    泳道（列内按标签/负责人分组）
    ========================================================================== */
 .lane-switch .lane-select,
