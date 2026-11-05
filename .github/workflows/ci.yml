@@ -134,6 +134,10 @@ jobs:
           tail -40 /tmp/backup.log 2>/dev/null | while IFS= read -r l; do
             echo "::warning::$l"
           done
+          echo "--- verify 日志 ---"
+          tail -60 /tmp/verify.log 2>/dev/null | while IFS= read -r l; do
+            echo "::warning::verify: $l"
+          done
 
   docker:
     runs-on: ubuntu-latest
