@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -116,6 +117,8 @@ jobs:
             exit 1
           }
           ls -la backups/
+          echo "--- dump 头部（前 15 行）---"
+          gzip -dc backups/cloudissue-*.sql.gz | head -15
 
       - name: 恢复验证（临时实例导入 + manifest 比对 + 孤儿检查）
         run: |
@@ -124,6 +127,10 @@ jobs:
             grep -E "FAIL|错误|Error" /tmp/verify.log | head -20 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           }
+
+      - name: 输出备份日志（仅失败时）
+        if: failure()
+        run: tail -30 /tmp/backup.log 2>/dev/null || true
 
   docker:
     runs-on: ubuntu-latest
