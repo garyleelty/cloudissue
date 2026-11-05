@@ -113,7 +113,7 @@ jobs:
         run: |
           set -o pipefail
           sh scripts/backup.sh 2>&1 | tee /tmp/backup.log || {
-            grep -E "错误|Error" /tmp/backup.log | head -10 | while IFS= read -r l; do echo "::error::$l"; done
+            grep -iE "错误|error|unknown|denied|failed" /tmp/backup.log | head -10 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           }
           ls -la backups/
@@ -128,9 +128,12 @@ jobs:
             exit 1
           }
 
-      - name: 输出备份日志（仅失败时）
+      - name: 输出备份日志（仅失败时，全量转注解便于离线排障）
         if: failure()
-        run: tail -30 /tmp/backup.log 2>/dev/null || true
+        run: |
+          tail -40 /tmp/backup.log 2>/dev/null | while IFS= read -r l; do
+            echo "::warning::$l"
+          done
 
   docker:
     runs-on: ubuntu-latest

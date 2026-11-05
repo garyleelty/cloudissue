@@ -76,14 +76,24 @@ require("readline").createInterface({ input: process.stdin })
 mv "$OUT_MANIFEST.tmp" "$OUT_MANIFEST"
 
 # ---- 2) mysqldump：单事务一致性快照 ----
-$MYSQLDUMP_BIN $MYSQL_ARGS \
-  --single-transaction \
-  --routines --triggers --events \
-  --set-gtid-purged=OFF \
-  --no-tablespaces \
-  --skip-masking-policies \
-  --skip-add-drop-masking-policy \
-  "$DB_NAME" | gzip -9 > "$OUT_SQL"
+# 两段式 dump：先落未压缩文件（拿真实退出码），成功后压缩。
+# 完整参数失败时降级为最小参数集重试（不同构建的 mysqldump 对
+# --set-gtid-purged 等参数支持不一，如 GitHub runner 的发行版构建）。
+DUMP_TMP="$BACKUP_DIR/.dump-$$"
+DUMP_ARGS_FULL="--single-transaction --routines --triggers --events --set-gtid-purged=OFF --no-tablespaces --skip-masking-policies --skip-add-drop-masking-policy"
+DUMP_ARGS_MIN="--single-transaction --routines --triggers --no-tablespaces"
+
+if ! $MYSQLDUMP_BIN $MYSQL_ARGS $DUMP_ARGS_FULL "$DB_NAME" > "$DUMP_TMP" 2>/dev/null; then
+  echo "[backup] 完整参数失败，降级为最小参数集重试"
+  if ! $MYSQLDUMP_BIN $MYSQL_ARGS $DUMP_ARGS_MIN "$DB_NAME" > "$DUMP_TMP" 2>/dev/null; then
+    echo "[backup] 错误：mysqldump 失败" >&2
+    $MYSQLDUMP_BIN $MYSQL_ARGS $DUMP_ARGS_MIN "$DB_NAME" > /dev/null 2>&1 || true
+    rm -f "$DUMP_TMP"
+    exit 1
+  fi
+fi
+gzip -9 -c "$DUMP_TMP" > "$OUT_SQL"
+rm -f "$DUMP_TMP"
 
 SQL_BYTES=$(wc -c < "$OUT_SQL" | tr -d ' ')
 if [ "$SQL_BYTES" -lt 200 ]; then
