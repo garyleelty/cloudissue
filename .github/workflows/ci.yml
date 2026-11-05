@@ -118,7 +118,7 @@ jobs:
           }
           ls -la backups/
           echo "--- dump 头部（前 15 行）---"
-          gzip -dc backups/cloudissue-*.sql.gz | head -15
+          gzip -dc backups/cloudissue-*.sql.gz | head -15 || true
 
       - name: 恢复验证（临时实例导入 + manifest 比对 + 孤儿检查）
         run: |
