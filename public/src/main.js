@@ -49,6 +49,7 @@ import {
 import { initListView, renderList, resetListPage } from './listview.js';
 import { downloadBlob } from './utils.js';
 import { STATUSES, STATUS_LABELS, FAIL_STATUS, MOBILE_BREAKPOINT } from '../../shared/constants.js';
+import { LANE_DIMS, LANE_DIM_LABELS } from '../../shared/swimlane.js';
 
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
@@ -220,6 +221,26 @@ function bindGlobalEvents() {
     $('#fKeyword').value = '';
     $('#btnMine').setAttribute('aria-pressed', 'false');
     $('#btnAI').setAttribute('aria-pressed', 'false');
+    notify();
+  });
+
+  // 泳道分组维度：视图层分组（卡片归属由数据决定，拖拽不改组）
+  const laneSelect = $('#laneSelect');
+  laneSelect.innerHTML = LANE_DIMS.map((d) => `<option value="${d}">${LANE_DIM_LABELS[d]}</option>`).join('');
+  try {
+    const saved = window.localStorage.getItem('issue-board:laneDim');
+    if (LANE_DIMS.includes(saved)) state.laneDim = saved;
+  } catch {
+    /* 隐私模式下降级为默认 */
+  }
+  laneSelect.value = state.laneDim;
+  laneSelect.addEventListener('change', () => {
+    state.laneDim = laneSelect.value;
+    try {
+      window.localStorage.setItem('issue-board:laneDim', state.laneDim);
+    } catch {
+      /* 持久化失败仅影响下次默认值 */
+    }
     notify();
   });
 

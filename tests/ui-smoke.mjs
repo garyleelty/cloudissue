@@ -1079,6 +1079,189 @@ console.log('\n--- Markdown 描述渲染（受限渲染器 + XSS 防护） ---')
   await wait(50);
 }
 
+console.log('\n--- 泳道（列内按标签/负责人分组） ---');
+{
+  const swim = await import('../shared/swimlane.js');
+  const dndSw = await import('../public/src/dnd.js');
+
+  // 纯函数：分组键与标题
+  check('标签泳道键取首个标签', swim.laneKeyOf({ tags: ['a', 'b'] }, 'tag') === 'tag:a');
+  check('无标签哨兵键', swim.laneKeyOf({ tags: [] }, 'tag') === 'tag:_none');
+  check('负责人泳道键优先 userId', swim.laneKeyOf({ assigneeId: 3 }, 'assignee') === 'assignee:3');
+  check(
+    '未指派哨兵键',
+    swim.laneKeyOf({ assigneeId: null, assignee: '周野' }, 'assignee') === 'assignee:_none',
+  );
+  check('关闭维度无键', swim.laneKeyOf({}, 'none') === 'none');
+  check(
+    '泳道标题：标签/无标签',
+    swim.laneTitleOf('tag:后端') === '# 后端' && swim.laneTitleOf('tag:_none') === '无标签',
+  );
+  check(
+    '泳道标题：负责人经映射解析',
+    swim.laneTitleOf('assignee:2', (id) => (id === 2 ? '周野' : null)) === '周野' &&
+      swim.laneTitleOf('assignee:9', () => null) === '用户 9',
+  );
+
+  // 默认关闭：无 lane 区块
+  check('默认无泳道区块', document.querySelectorAll('#board .lane').length === 0);
+
+  // 切换到标签维度
+  $('#laneSelect').value = 'tag';
+  $('#laneSelect').dispatchEvent(new window.Event('change', { bubbles: true }));
+  await wait(120);
+  const lanes = [...document.querySelectorAll('#board .lane')];
+  check('泳道开启后出现 lane 区块', lanes.length > 0, String(lanes.length));
+  check('泳道持久化到 localStorage', window.localStorage.getItem('issue-board:laneDim') === 'tag');
+  const backlogLanes = [...document.querySelectorAll('.column[data-status="backlog"] .lane')];
+  const laneKeys = backlogLanes.map((l) => l.dataset.laneKey);
+  check(
+    'backlog 列按标签分区（工具/无标签）',
+    laneKeys.includes('tag:工具') && laneKeys.includes('tag:_none'),
+    laneKeys.join(','),
+  );
+  check(
+    '泳道标题渲染（无标签）',
+    backlogLanes.some((l) => l.querySelector('.lane-head')?.textContent === '无标签'),
+  );
+  const toolBody = backlogLanes.find((l) => l.dataset.laneKey === 'tag:工具')?.querySelector('.lane-body');
+  const noneBody = backlogLanes.find((l) => l.dataset.laneKey === 'tag:_none')?.querySelector('.lane-body');
+  check('卡片归入自身组（卡5 在 工具 组）', Boolean(toolBody?.querySelector('.card[data-id="5"]')));
+  const noneIds = [...(noneBody?.querySelectorAll('.card') || [])].map((c) => c.dataset.id);
+  check('无标签组聚合无标签卡（7）', JSON.stringify(noneIds) === JSON.stringify(['7']), noneIds.join(','));
+
+  // 组内排序：补一张无标签卡(8) 移到 7 之后 → 无标签组内顺序变化，不串组
+  const laneIssue = mkIssue(8, {
+    boardId: 1,
+    title: '泳道排序卡',
+    status: 'backlog',
+    position: 6,
+    tags: [],
+    assigneeId: 2,
+    assignee: '周野',
+  });
+  FIXTURE.push(laneIssue);
+  s.issues.push(laneIssue);
+  notify();
+  await wait(80);
+  dndSw.applyMoveOptimistic(8, 'backlog', 7);
+  await wait(80);
+  const noneIdsAfter = [
+    ...document.querySelectorAll('.column[data-status="backlog"] .lane[data-lane-key="tag:_none"] .card'),
+  ].map((c) => c.dataset.id);
+  check(
+    '组内排序生效（8 排到 7 后）',
+    JSON.stringify(noneIdsAfter) === JSON.stringify(['7', '8']),
+    noneIdsAfter.join(','),
+  );
+  check(
+    '组间不串（工具组仍只有卡5）',
+    Boolean(
+      document.querySelector(
+        '.column[data-status="backlog"] .lane[data-lane-key="tag:工具"] .card[data-id="5"]',
+      ),
+    ),
+  );
+
+  // 跨组投放归位：乐观移动卡5 到无标签组的 8 之后 → 渲染仍归 工具 组
+  dndSw.applyMoveOptimistic(5, 'backlog', 8);
+  await wait(80);
+  const fiveLane = document.querySelector('.card[data-id="5"]')?.closest('.lane')?.dataset.laneKey;
+  check('跨组投放后卡片归位自身组（数据不改组）', fiveLane === 'tag:工具', String(fiveLane));
+  s.drag = null;
+  notify();
+  await wait(80);
+
+  // 触屏拖拽：占位落在自身组 lane，afterId 取组内最后一张
+  {
+    // 复位：把卡5 移回 backlog 首、卡7 移回末，状态可预期
+    s.issues = s.issues.map((i) => (i.id === 5 ? { ...i, status: 'backlog' } : i));
+    notify();
+    const apiMod2 = await import('../public/src/api.js');
+    let movePayload2 = null;
+    const origMove2 = apiMod2.api.move;
+    apiMod2.api.move = async (id, payload) => {
+      movePayload2 = { id, ...payload };
+      return { moved: true };
+    };
+    const card5 = document.querySelector('.column[data-status="backlog"] .card[data-id="5"]');
+    const ptr2 = (type, target, opts = {}) => {
+      const ev = new window.Event(type, { bubbles: true, cancelable: true });
+      Object.assign(ev, { pointerType: 'touch', pointerId: 9, clientX: 0, clientY: 0, ...opts });
+      target.dispatchEvent(ev);
+    };
+    ptr2('pointerdown', card5, { clientX: 0, clientY: 60 });
+    await wait(320);
+    ptr2('pointermove', card5, { clientX: 0, clientY: 60 });
+    // 指针悬到别组 lane（无标签组）也该落在自身组（工具组）
+    const noneLane = document.querySelector(
+      '.column[data-status="backlog"] .lane[data-lane-key="tag:_none"]',
+    );
+    noneLane?.classList.add('drag-over');
+    ptr2('pointermove', noneLane || card5, { clientX: 0, clientY: 60 });
+    const placeholderIn = document.querySelector('#board .placeholder')?.closest('.lane')?.dataset.laneKey;
+    ptr2('pointerup', card5, { clientX: 0, clientY: 60 });
+    await wait(60);
+    check('触屏泳道：占位始终落在自身组', placeholderIn === 'tag:工具', String(placeholderIn));
+    // 卡5 所在工具组在 backlog 列内是唯一一张 → 落组内只有自身 → afterId 为 null（组首）或自身
+    const toolIds = [
+      ...document.querySelectorAll('.column[data-status="backlog"] .lane[data-lane-key="tag:工具"] .card'),
+    ].map((c) => Number(c.dataset.id));
+    check(
+      '触屏泳道：落位在自身组内（afterId 为组内合法位置）',
+      movePayload2 !== null &&
+        movePayload2.toStatus === 'backlog' &&
+        (movePayload2.afterId === null || toolIds.includes(movePayload2.afterId)),
+      JSON.stringify({ payload: movePayload2, toolIds }),
+    );
+    apiMod2.api.move = origMove2;
+  }
+
+  // 切到负责人维度：未指派/负责人组
+  $('#laneSelect').value = 'assignee';
+  $('#laneSelect').dispatchEvent(new window.Event('change', { bubbles: true }));
+  await wait(120);
+  const aLanes = [...document.querySelectorAll('.column[data-status="backlog"] .lane')].map(
+    (l) => l.dataset.laneKey,
+  );
+  check(
+    '负责人维度分区（未指派组 + 周野组）',
+    aLanes.includes('assignee:_none') && aLanes.includes('assignee:2'),
+    aLanes.join(','),
+  );
+  check(
+    '负责人组卡片归组（卡8 assigneeId=2）',
+    Boolean(
+      document.querySelector(
+        '.column[data-status="backlog"] .lane[data-lane-key="assignee:2"] .card[data-id="8"]',
+      ),
+    ),
+  );
+  check(
+    '负责人组标题经用户映射',
+    [...document.querySelectorAll('.column[data-status="backlog"] .lane-head')].some(
+      (h) => h.textContent === '周野',
+    ),
+    [...document.querySelectorAll('.column[data-status="backlog"] .lane-head')]
+      .map((h) => h.textContent)
+      .join(','),
+  );
+
+  // 关闭泳道：恢复平铺
+  $('#laneSelect').value = 'none';
+  $('#laneSelect').dispatchEvent(new window.Event('change', { bubbles: true }));
+  await wait(120);
+  check('关闭泳道恢复平铺（无 lane）', document.querySelectorAll('#board .lane').length === 0);
+  check(
+    '关闭后卡片仍正常渲染（backlog 3 张、无 lane 包裹）',
+    document.querySelectorAll('.column[data-status="backlog"] .card').length === 3 &&
+      !document.querySelector('.column[data-status="backlog"] .lane-body') &&
+      document.querySelector('.column[data-status="backlog"] .col-body .card[data-id="5"]') !== null,
+    `${document.querySelectorAll('.column[data-status="backlog"] .card').length} cards`,
+  );
+  check('泳道偏好持久化', window.localStorage.getItem('issue-board:laneDim') === 'none');
+}
+
 console.log('\n--- toast 去重 ---');
 {
   const toastMod = await import('../public/src/toast.js');

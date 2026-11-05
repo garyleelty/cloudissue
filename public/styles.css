@@ -522,6 +522,53 @@ textarea {
 }
 
 /* ==========================================================================
+   泳道（列内按标签/负责人分组）
+   ========================================================================== */
+.lane-switch .lane-select,
+.lane-switch select {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.lane {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  margin: 0 12px 10px;
+  background: rgba(250, 250, 252, 0.6);
+}
+.lane-head {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid var(--line);
+}
+.lane-body {
+  min-height: 26px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* 拖拽中：自身组可投放，别组禁投 */
+.lane.drag-over {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+}
+.lane.lane-invalid {
+  opacity: 0.45;
+}
+.lane.lane-drag {
+  border-style: dashed;
+}
+
+/* ==========================================================================
    看板成员管理弹窗
    ========================================================================== */
 .members-list {

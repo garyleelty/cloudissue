@@ -18,6 +18,7 @@ import { STATUSES } from '../../shared/constants.js';
  * @property {string} activeTab
  * @property {'board' | 'list'} view   当前视图
  * @property {{ key: string, dir: 'asc' | 'desc' }} listSort  列表排序
+ * @property {'none' | 'tag' | 'assignee'} laneDim  泳道分组维度（看板视图）
  * @property {number} listPage        列表当前页（从 1 起）
  * @property {Set<number>} selection   批量操作勾选中的卡片
  */
@@ -43,6 +44,7 @@ export const state = {
   view: 'board',
   listSort: { key: 'updatedAt', dir: 'desc' },
   listPage: 1,
+  laneDim: 'none',
   selection: new Set(),
 };
 

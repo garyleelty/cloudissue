@@ -16,6 +16,7 @@ import { state, notify } from './state.js';
 import { api } from './api.js';
 import { toast } from './toast.js';
 import { askFailureReason } from './modals.js';
+import { laneKeyOf } from '../../shared/swimlane.js';
 import { FAIL_STATUS, STATUS_LABELS, MSG_MOVE_CANCELLED_NO_REASON } from '../../shared/constants.js';
 
 const board = document.querySelector('#board');
@@ -26,10 +27,50 @@ placeholder.className = 'placeholder';
 /** @type {() => Promise<void>} */
 let onChanged = async () => {};
 
+/** 泳道是否开启 */
+function lanesOn() {
+  return state.laneDim !== 'none';
+}
+
+/** 拖拽卡在泳道维度下的组键（泳道关闭返回 null） */
+function dragLaneKey() {
+  if (!lanesOn() || !state.drag) return null;
+  const issue = state.issues.find((i) => i.id === state.drag.id);
+  return issue ? laneKeyOf(issue, state.laneDim) : null;
+}
+
+/**
+ * 列内的投放容器：泳道关闭 = col-body；
+ * 泳道开启 = 拖拽卡自身组的 lane-body（泳道只是视图分组，跨组投放自动归位）。
+ * 自身组的 lane 不存在时回退 col-body（正常情况下渲染层会兜底创建）。
+ */
+/** 属性选择器值转义（不依赖 CSS.escape，jsdom 等环境可能缺失全局 CSS） */
+function attrSel(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function dropContainerIn(col, laneKey) {
+  const colBody = col.querySelector('.col-body');
+  if (!laneKey) return colBody;
+  return colBody.querySelector(`.lane[data-lane-key="${attrSel(laneKey)}"] .lane-body`) || colBody;
+}
+
+/** 列内泳道高亮：自身组可投放（drag-over），其余组禁投（lane-invalid） */
+function highlightLanes(col, laneKey) {
+  col.querySelectorAll('.lane').forEach((l) => {
+    const own = l.dataset.laneKey === laneKey;
+    l.classList.toggle('drag-over', own);
+    l.classList.toggle('lane-invalid', !own);
+  });
+}
+
 /** 清理所有拖拽痕迹（HTML5 与触屏两条路径共用） */
 export function clearDragState() {
   board.querySelectorAll('.column').forEach((c) => {
     c.classList.remove('drag-over', 'drag-invalid');
+  });
+  board.querySelectorAll('.lane').forEach((l) => {
+    l.classList.remove('drag-over', 'lane-invalid');
   });
   placeholder.remove();
   board.querySelectorAll('.card.dragging').forEach((c) => c.classList.remove('dragging'));
@@ -62,6 +103,40 @@ function afterIdFromPlaceholder() {
   let prev = placeholder.previousElementSibling;
   while (prev && !prev.classList.contains('card')) prev = prev.previousElementSibling;
   return prev ? Number(prev.dataset.id) : null;
+}
+
+/**
+ * 捕获占位当前位置（泳道渲染每帧重建 lane 容器，会连占位一起摧毁）。
+ * 渲染层先调 capture，重建后调 restore，拖拽中的占位就能跨渲染存活。
+ * @returns {{ status: string, laneKey: string | null, afterId: number | null } | null}
+ */
+export function capturePlaceholderState() {
+  const col = placeholder.closest('.column');
+  if (!col) return null;
+  return {
+    status: col.dataset.status,
+    laneKey: placeholder.closest('.lane')?.dataset.laneKey ?? null,
+    afterId: afterIdFromPlaceholder(),
+  };
+}
+
+/**
+ * 把占位恢复到捕获的位置（泳道渲染重建容器之后调用）。
+ * @param {{ status: string, laneKey: string | null, afterId: number | null } | null} st
+ * @param {string} status 正在渲染的列（只恢复本列）
+ */
+export function restorePlaceholderState(st, status) {
+  if (!st || st.status !== status || !state.drag) return;
+  const col = board.querySelector(`.column[data-status="${status}"]`);
+  if (!col) return;
+  const container = dropContainerIn(col, st.laneKey);
+  let ref = null;
+  if (st.afterId != null) {
+    const after = container.querySelector(`.card[data-id="${st.afterId}"]`);
+    if (after) ref = after.nextElementSibling;
+  }
+  if (ref) container.insertBefore(placeholder, ref);
+  else container.appendChild(placeholder);
 }
 
 /**
@@ -250,8 +325,17 @@ function stepEdgeScroll() {
 function updateTouchDrag(x, y) {
   const col = columnFromPoint(x, y);
   if (!col) return;
+  const laneKey = dragLaneKey();
   board.querySelectorAll('.column').forEach((c) => c.classList.toggle('drag-over', c === col));
-  updatePlaceholder(col.querySelector('.col-body'), y);
+  if (lanesOn()) {
+    // 泳道：占位始终落在拖拽卡自身组的 lane（跨组投放自动归位），别组标禁投
+    col.querySelectorAll('.lane').forEach((l) => {
+      const own = l.dataset.laneKey === laneKey;
+      l.classList.toggle('drag-over', own);
+      l.classList.toggle('lane-invalid', !own);
+    });
+  }
+  updatePlaceholder(dropContainerIn(col, laneKey), y);
   updateEdgeScroll(x);
 }
 
@@ -333,14 +417,16 @@ export function initDnd(callbacks = {}) {
 
   // 列级：高亮 / 占位 / 落位
   board.querySelectorAll('.column').forEach((col) => {
-    const colBody = col.querySelector('.col-body');
+    /** 该列的投放容器（泳道下 = 拖拽卡自身组的 lane-body） */
+    const containerFor = () => dropContainerIn(col, dragLaneKey());
 
     col.addEventListener('dragenter', (e) => {
       if (!state.drag) return;
       e.preventDefault();
       col.classList.add('drag-over');
       col.classList.remove('drag-invalid');
-      updatePlaceholder(colBody, e.clientY);
+      if (lanesOn()) highlightLanes(col, dragLaneKey());
+      updatePlaceholder(containerFor(), e.clientY);
     });
 
     col.addEventListener('dragover', (e) => {
@@ -348,7 +434,8 @@ export function initDnd(callbacks = {}) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       col.classList.add('drag-over');
-      updatePlaceholder(colBody, e.clientY);
+      if (lanesOn()) highlightLanes(col, dragLaneKey());
+      updatePlaceholder(containerFor(), e.clientY);
     });
 
     col.addEventListener('dragleave', (e) => {

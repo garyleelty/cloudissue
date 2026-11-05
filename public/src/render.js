@@ -10,6 +10,8 @@ import { state } from './state.js';
 import { filteredIssues, hasActiveFilters } from './filters.js';
 import { esc, fmtDateTime, dueInfo } from './utils.js';
 import { myRole } from './boards.js';
+import { laneKeyOf, laneTitleOf } from '../../shared/swimlane.js';
+import { capturePlaceholderState, restorePlaceholderState } from './dnd.js';
 import {
   STATUSES,
   STATUS_LABELS,
@@ -151,6 +153,104 @@ export function buildSkeleton() {
 }
 
 /** 增量更新：只改动必要的 DOM */
+export /** 负责人 id → 展示名（泳道标题用；查无此人回退 null） */
+function resolveUserName(userId) {
+  const u = state.users.find((x) => x.id === userId);
+  return u ? u.displayName || u.username : null;
+}
+
+/** 取（或建）卡片节点并按最新数据更新内容；泳道/平铺两条路径共用 */
+function ensureCardNode(issue) {
+  let node = cardNodes.get(issue.id);
+  if (!node) {
+    node = document.createElement('article');
+    node.className = 'card';
+    node.draggable = true;
+    node.dataset.id = String(issue.id);
+    cardNodes.set(issue.id, node);
+  }
+
+  node.classList.toggle('selected', state.selection.has(issue.id));
+
+  const sig = cardSignature(issue);
+  if (cardSigs.get(issue.id) !== sig) {
+    node.dataset.priority = issue.priority;
+    node.innerHTML = cardInnerHtml(issue);
+    cardSigs.set(issue.id, sig);
+  }
+  return node;
+}
+
+/** 列内平铺渲染（泳道关闭时的原路径） */
+function renderFlatColumn(colBody, shown) {
+  // 从泳道切回平铺：清掉 lane 容器（卡片节点引用保留，下方逐个插回）
+  if (colBody.querySelector('.lane')) colBody.innerHTML = '';
+  let prev = null;
+  for (const issue of shown) {
+    const node = ensureCardNode(issue);
+    const expected = prev ? prev.nextElementSibling : colBody.firstElementChild;
+    if (expected !== node) colBody.insertBefore(node, expected);
+    prev = node;
+  }
+}
+
+/** 属性选择器值转义（不依赖 CSS.escape，jsdom 等环境可能缺失全局 CSS） */
+function attrSel(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * 列内泳道渲染：按 laneKey 分区（组序 = 卡片首次出现顺序，拖拽兜底组排最后）。
+ * lane 容器每帧重建，卡片节点复用（append 语义 = 移动），拖拽中的占位由调用方恢复。
+ */
+function renderLanedColumn(colBody, status, shown, laneDim) {
+  // 拖拽期兜底：拖拽卡的组必须在每列都有 lane，否则跨列无处投放
+  const dragIssue = state.drag ? state.issues.find((i) => i.id === state.drag.id) : null;
+  const dragKey = dragIssue ? laneKeyOf(dragIssue, laneDim) : null;
+
+  const groups = [];
+  const byKey = new Map();
+  for (const issue of shown) {
+    const key = laneKeyOf(issue, laneDim);
+    if (!byKey.has(key)) {
+      byKey.set(key, []);
+      groups.push(key);
+    }
+    byKey.get(key).push(issue);
+  }
+  if (dragKey && !byKey.has(dragKey)) {
+    byKey.set(dragKey, []);
+    groups.push(dragKey);
+  }
+
+  colBody.innerHTML = groups
+    .map(
+      (key) => `
+      <section class="lane${key === dragKey ? ' lane-drag' : ''}" data-lane-key="${esc(key)}">
+        <div class="lane-head">${esc(laneTitleOf(key, resolveUserName))}</div>
+        <div class="lane-body"></div>
+      </section>`,
+    )
+    .join('');
+
+  for (const key of groups) {
+    const lane = colBody.querySelector(`.lane[data-lane-key="${attrSel(key)}"]`);
+    const body = lane.querySelector('.lane-body');
+    for (const issue of byKey.get(key)) body.appendChild(ensureCardNode(issue));
+  }
+
+  // 空状态：没有可见卡片且没有拖拽兜底组
+  if (!groups.length) {
+    const text = shown.length ? '' : '无匹配任务';
+    if (text) {
+      const div = document.createElement('div');
+      div.className = 'col-empty';
+      div.textContent = text;
+      colBody.appendChild(div);
+    }
+  }
+}
+
 export function renderBoard() {
   if (state.view !== 'board') return;
   buildSkeleton();
@@ -168,7 +268,10 @@ export function renderBoard() {
     }
   }
 
-  // 2) 逐列定位与更新
+  // 2) 逐列定位与更新（泳道开 / 关两条路径；拖拽期间占位先捕获后恢复）
+  const lanesOn = state.laneDim !== 'none';
+  const placeholderState = lanesOn ? capturePlaceholderState() : null;
+
   for (const status of STATUSES) {
     const col = board.querySelector(`.column[data-status="${status}"]`);
     const colBody = col.querySelector('.col-body');
@@ -192,46 +295,26 @@ export function renderBoard() {
       pickEl.indeterminate = pickedCount > 0 && pickedCount < shownIds.length;
     }
 
-    let prev = null;
-    for (const issue of shown) {
-      let node = cardNodes.get(issue.id);
-      if (!node) {
-        node = document.createElement('article');
-        node.className = 'card';
-        node.draggable = true;
-        node.dataset.id = String(issue.id);
-        cardNodes.set(issue.id, node);
+    if (lanesOn) {
+      renderLanedColumn(colBody, status, shown, state.laneDim);
+      restorePlaceholderState(placeholderState, status);
+    } else {
+      renderFlatColumn(colBody, shown);
+
+      // 3) 空状态
+      const emptyEl = colBody.querySelector('.col-empty');
+      if (!shown.length) {
+        const text = all.length ? '无匹配任务' : '暂无任务';
+        if (emptyEl) emptyEl.textContent = text;
+        else {
+          const div = document.createElement('div');
+          div.className = 'col-empty';
+          div.textContent = text;
+          colBody.appendChild(div);
+        }
+      } else if (emptyEl) {
+        emptyEl.remove();
       }
-
-      // 勾选态不进签名也能刷，但放进签名可以少一次 innerHTML 重写
-      node.classList.toggle('selected', state.selection.has(issue.id));
-
-      const sig = cardSignature(issue);
-      if (cardSigs.get(issue.id) !== sig) {
-        node.dataset.priority = issue.priority;
-        node.innerHTML = cardInnerHtml(issue);
-        cardSigs.set(issue.id, sig);
-      }
-
-      // 仅在位置不正确时移动节点，避免无谓重排
-      const expected = prev ? prev.nextElementSibling : colBody.firstElementChild;
-      if (expected !== node) colBody.insertBefore(node, expected);
-      prev = node;
-    }
-
-    // 3) 空状态
-    const emptyEl = colBody.querySelector('.col-empty');
-    if (!shown.length) {
-      const text = all.length ? '无匹配任务' : '暂无任务';
-      if (emptyEl) emptyEl.textContent = text;
-      else {
-        const div = document.createElement('div');
-        div.className = 'col-empty';
-        div.textContent = text;
-        colBody.appendChild(div);
-      }
-    } else if (emptyEl) {
-      emptyEl.remove();
     }
   }
 
