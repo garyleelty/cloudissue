@@ -85,10 +85,15 @@ jobs:
       DB_USER: root
       DB_PASSWORD: root
       DB_NAME: issue_board
+      # 恢复验证用模式一：复用运行中的 MySQL 实例，独立 database 隔离
+      VERIFY_HOST: 127.0.0.1
+      VERIFY_PORT: '3306'
+      VERIFY_USER: root
+      VERIFY_PASSWORD: root
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 MySQL 8.4（runner 本机，供临时恢复实例复用 mysqld）
+      - name: 安装 MySQL 8.4（runner 本机 mysqld 实例）
         uses: shogo82148/actions-setup-mysql@v1
         with:
           mysql-version: '8.4'
