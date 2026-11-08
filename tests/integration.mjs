@@ -3,6 +3,8 @@
  * 运行前需先启动服务（认证套件会发起大量登录尝试，请调高认证限流）：
  *   AUTH_RATE_LIMIT=10000 node server/index.js
  */
+import http from 'node:http';
+
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:5173';
 
 let pass = 0;
@@ -1310,6 +1312,127 @@ async function main() {
   check('删卡后相关通知级联消失', !(aAfterDel.data.notifications || []).some((n) => n.issueId === ntCardId));
   const delNtBoard = await withJar(jarA, () => del(`/api/boards/${ntBd}`));
   check('清理通知测试看板', delNtBoard.status === 200, JSON.stringify(delNtBoard.data));
+
+  console.log('\n--- 21. Webhook 外发通知（事件流 → 端点） ---');
+  // 本地 HTTP 接收端：记录请求（url/body/headers）
+  const received = [];
+  const sink = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push({ url: req.url, headers: req.headers, body });
+      // /flaky 路径前 2 次返回 500，测试重试
+      const flakyCount = received.filter((r) => r.url === '/flaky').length;
+      res.statusCode = req.url === '/flaky' && flakyCount <= 2 ? 500 : 200;
+      res.end('ok');
+    });
+  });
+  await new Promise((r) => sink.listen(0, '127.0.0.1', r));
+  const sinkPort = sink.address().port;
+
+  // A 建通知专用板 + 三个 webhook（generic 带密钥 / 钉钉加签 / flaky 重试）
+  cookieJar = jarA;
+  const whBoard = await post('/api/boards', { name: `Webhook板_${uniq}` });
+  const whBd = whBoard.data.board?.id;
+  await post(`/api/boards/${whBd}/members`, { userId: UB.id, role: 'member' });
+  const card = await post('/api/issues', { title: `Webhook卡_${uniq}`, boardId: whBd });
+  const whCardId = card.data.id;
+
+  const mk = (url, type, secret, events) =>
+    post(`/api/boards/${whBd}/webhooks`, { url, type, secret, events });
+  const whGeneric = await mk(`http://127.0.0.1:${sinkPort}/generic`, 'generic', 'hmac-secret-1', ['status']);
+  const whDing = await mk(`http://127.0.0.1:${sinkPort}/dingtalk`, 'dingtalk', 'SECdingtalk-secret', [
+    'status',
+  ]);
+  const whFlaky = await mk(`http://127.0.0.1:${sinkPort}/flaky`, 'generic', '', ['status', 'comment']);
+  check(
+    '创建 3 个 Webhook 订阅',
+    [whGeneric, whDing, whFlaky].every((r) => r.status === 201),
+    JSON.stringify([whGeneric.status, whDing.status, whFlaky.status]),
+  );
+  const badUrl = await post(`/api/boards/${whBd}/webhooks`, { url: 'javascript:alert(1)', type: 'generic' });
+  check('非法 URL（非 http）被拒', badUrl.status === 400, JSON.stringify(badUrl.data));
+  const bWhAdd = await withJar(jarB, () =>
+    post(`/api/boards/${whBd}/webhooks`, { url: `http://127.0.0.1:${sinkPort}/x`, type: 'generic' }),
+  );
+  check('member 添加 Webhook 被拒（owner 专属）', bWhAdd.status === 400, JSON.stringify(bWhAdd.data));
+
+  // 触发事件：A 移动卡到 planning（status 事件）——A 是操作者不收站内通知，但 webhook 是板级端点照发
+  await post(`/api/issues/${whCardId}/move`, { toStatus: 'planning' });
+  // 分发器周期 10s：轮询接收端最多 15s 等 generic + dingtalk 到达
+  let gotGeneric = null;
+  let gotDing = null;
+  for (let i = 0; i < 30; i++) {
+    gotGeneric = received.find((r) => r.url.startsWith('/generic'));
+    gotDing = received.find((r) => r.url.startsWith('/dingtalk'));
+    if (gotGeneric && gotDing) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  check('generic 端点收到事件', Boolean(gotGeneric));
+  check('dingtalk 端点收到事件', Boolean(gotDing));
+  if (gotGeneric) {
+    const payload = JSON.parse(gotGeneric.body);
+    check(
+      'generic 载荷结构（event/title/actor/issueId）',
+      payload.event === 'status' &&
+        payload.title.includes(`Webhook卡_${uniq}`) &&
+        payload.issueId === whCardId,
+      gotGeneric.body.slice(0, 160),
+    );
+    check(
+      'HMAC 签名头存在且可验证',
+      Boolean(gotGeneric.headers['x-cloudissue-signature']) &&
+        gotGeneric.headers['x-cloudissue-event'] === 'status',
+      JSON.stringify(gotGeneric.headers['x-cloudissue-signature']).slice(0, 60),
+    );
+  }
+  if (gotDing) {
+    const ding = JSON.parse(gotDing.body);
+    check(
+      '钉钉载荷格式（msgtype=text）',
+      ding.msgtype === 'text' && ding.text?.content?.includes('CloudIssue'),
+      gotDing.body.slice(0, 120),
+    );
+    check(
+      '钉钉加签 URL 参数（timestamp+sign）',
+      gotDing.url.includes('timestamp=') && gotDing.url.includes('sign='),
+      gotDing.url.slice(0, 100),
+    );
+  }
+
+  // flaky：评论事件触发 → 前 2 次 500 → 重试后成功（重试机制验证）
+  await post(`/api/issues/${whCardId}/comments`, { body: `webhook重试验证_${uniq}` });
+  let flakyOk = false;
+  for (let i = 0; i < 60; i++) {
+    // 至少 3 次 /flaky 记录（2 次失败 + 1 次成功）即证明重试
+    const flaky = received.filter((r) => r.url.startsWith('/flaky'));
+    if (flaky.length >= 3) {
+      flakyOk = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  check(
+    '失败重试生效（flaky 端点被重投到成功）',
+    flakyOk,
+    `received flaky: ${received.filter((r) => r.url.startsWith('/flaky')).length}`,
+  );
+
+  // Webhook 列表与删除
+  const whList = await api(`/api/boards/${whBd}/webhooks`);
+  check(
+    'Webhook 列表返回 3 条',
+    (whList.data.webhooks || []).length === 3,
+    JSON.stringify(whList.data).slice(0, 160),
+  );
+  const delWh = await del(`/api/boards/${whBd}/webhooks/${whFlaky.data.webhook.id}`);
+  check('删除 Webhook 成功', delWh.status === 200, JSON.stringify(delWh.data));
+  const delWhAgain = await del(`/api/boards/${whBd}/webhooks/${whFlaky.data.webhook.id}`);
+  check('重复删除被拒', delWhAgain.status === 400);
+
+  sink.close();
+  const delWhBoard = await del(`/api/boards/${whBd}`);
+  check('清理 Webhook 测试板', delWhBoard.status === 200);
 
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);

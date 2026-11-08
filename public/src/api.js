@@ -94,6 +94,13 @@ export const api = {
   /** @param {number} boardId @param {number} userId 移除成员（owner 专属） */
   removeMember: (boardId, userId) =>
     request(`/api/boards/${boardId}/members/${userId}`, { method: 'DELETE' }),
+  /** @param {number} boardId Webhook 订阅列表 */
+  webhooks: (boardId) => request(`/api/boards/${boardId}/webhooks`),
+  /** @param {{ boardId: number, url: string, type: string, secret?: string, events?: string[] }} p */
+  createWebhook: (p) =>
+    request(`/api/boards/${p.boardId}/webhooks`, { method: 'POST', body: JSON.stringify(p) }),
+  /** @param {number} boardId @param {number} id 删除 Webhook（owner 专属） */
+  deleteWebhook: (boardId, id) => request(`/api/boards/${boardId}/webhooks/${id}`, { method: 'DELETE' }),
   /**
    * 导出 CSV：携带当前筛选条件，服务端与看板同口径过滤。
    * 返回 { blob, count, filename }——blob 供下载，count 供 toast 展示。

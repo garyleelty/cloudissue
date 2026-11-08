@@ -186,6 +186,41 @@ CREATE TABLE IF NOT EXISTS `notifications` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='站内通知';
 
 -- ------------------------------------------------------------
+-- 1.8 Webhook 订阅（看板级外发通知；generic / 钉钉 / 企微 / 飞书）
+--     事件流：站内通知落表 → HTTP 分发器消费外发（人与 AI 的动作同源）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `webhooks` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `board_id`   BIGINT UNSIGNED NOT NULL,
+  `url`        VARCHAR(512)    NOT NULL COMMENT 'Webhook 端点（http/https）',
+  `type`       ENUM('generic','dingtalk','wecom','feishu') NOT NULL DEFAULT 'generic' COMMENT '载荷格式',
+  `secret`     VARCHAR(128)    NOT NULL DEFAULT '' COMMENT '签名密钥（generic=HMAC 头；dingtalk=加签）',
+  `events`     VARCHAR(64)     NOT NULL DEFAULT 'status,assignee,comment' COMMENT '订阅事件，逗号分隔',
+  `enabled`    TINYINT(1)      NOT NULL DEFAULT 1,
+  `created_at` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_wh_board` (`board_id`, `enabled`),
+  UNIQUE KEY `uk_wh_board_url` (`board_id`, `url`),
+  CONSTRAINT `fk_wh_board` FOREIGN KEY (`board_id`) REFERENCES `boards` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='看板 Webhook 订阅';
+
+-- ------------------------------------------------------------
+-- 1.9 Webhook 分发记录（每个通知 × 每个 webhook 的投递状态；失败重试）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `webhook_dispatch` (
+  `notification_id` BIGINT UNSIGNED NOT NULL,
+  `webhook_id`      BIGINT UNSIGNED NOT NULL,
+  `ok`              TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '最近一次投递是否成功',
+  `attempts`        INT             NOT NULL DEFAULT 0 COMMENT '累计尝试次数，>5 不再重试',
+  `last_error`      VARCHAR(255)    NOT NULL DEFAULT '',
+  `dispatched_at`   DATETIME        NULL COMMENT '成功投递时间；NULL=待投递/待重试',
+  PRIMARY KEY (`notification_id`, `webhook_id`),
+  KEY `idx_wd_pending` (`dispatched_at`, `attempts`),
+  CONSTRAINT `fk_wd_notif` FOREIGN KEY (`notification_id`) REFERENCES `notifications` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_wd_webhook` FOREIGN KEY (`webhook_id`) REFERENCES `webhooks` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Webhook 分发记录';
+
+-- ------------------------------------------------------------
 -- 2. 标签表（一个任务可有多个标签）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `issue_tags` (

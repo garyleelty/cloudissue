@@ -117,6 +117,9 @@ export function renderBoardSwitch() {
     (isOwner()
       ? `<button class="drop-opt board-members" type="button" data-board-members="1">
           <span class="board-create-plus">👥</span><span>成员管理</span>
+        </button>
+        <button class="drop-opt board-webhooks" type="button" data-board-webhooks="1">
+          <span class="board-create-plus">🔗</span><span>Webhook 通知</span>
         </button>`
       : '');
 }
@@ -271,6 +274,113 @@ export async function openMembersModal() {
   $('#memberAddBtn').disabled = !candidates.length;
 }
 
+const WEBHOOK_TYPE_LABELS = {
+  generic: '通用 JSON',
+  dingtalk: '钉钉',
+  wecom: '企业微信',
+  feishu: '飞书',
+};
+const EVENT_LABELS = { status: '流转', assignee: '指派', comment: '评论' };
+
+/** Webhook 管理弹窗：owner 可增删；事件订阅多选 */
+export async function openWebhooksModal() {
+  const boardId = state.currentBoardId;
+  if (!boardId) return;
+  $('#modalRoot').hidden = false;
+  [$('#modalForm'), $('#modalConfirm'), $('#modalReason'), $('#modalBoard'), $('#modalMembers')].forEach(
+    (m) => {
+      m.hidden = true;
+    },
+  );
+  $('#modalWebhooks').hidden = false;
+  $('#webhooksError').hidden = true;
+
+  $('#webhooksTitle').textContent =
+    `Webhook 通知 · ${state.boards.find((b) => b.id === boardId)?.name ?? ''}`;
+  const owner = isOwner();
+
+  let webhooks = [];
+  try {
+    webhooks = (await api.webhooks(boardId)).webhooks ?? [];
+  } catch (err) {
+    $('#webhooksError').textContent = err.message;
+    $('#webhooksError').hidden = false;
+    return;
+  }
+
+  $('#webhooksList').innerHTML = webhooks.length
+    ? webhooks
+        .map(
+          (w) => `
+      <div class="webhook-row" data-id="${w.id}">
+        <span class="webhook-type">${WEBHOOK_TYPE_LABELS[w.type] || w.type}</span>
+        <span class="webhook-url" title="${esc(w.url)}">${esc(w.url)}</span>
+        <span class="webhook-events-badge">${(w.events || []).map((e) => EVENT_LABELS[e] || e).join(' / ')}</span>
+        ${
+          owner
+            ? `<span class="icon-btn webhook-del" data-del-id="${w.id}" role="button" aria-label="删除 Webhook" title="删除">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+              </span>`
+            : ''
+        }
+      </div>`,
+        )
+        .join('')
+    : '<div class="webhook-empty">还没有配置 Webhook——添加一个端点，看板事件就会外发到 IM 或你的服务。</div>';
+  $('#webhookAddRow').hidden = !owner;
+}
+
+/** Webhook 弹窗事件（绑定一次） */
+function bindWebhooksModal() {
+  const modal = $('#modalWebhooks');
+  const reload = () => openWebhooksModal();
+
+  modal.addEventListener('click', async (e) => {
+    const del = e.target.closest('[data-del-id]');
+    if (!del) return;
+    try {
+      await api.deleteWebhook(state.currentBoardId, Number(del.dataset.delId));
+      toast('Webhook 已删除', 'success');
+      await reload();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  $('#webhookAddBtn').addEventListener('click', async () => {
+    const errEl = $('#webhooksError');
+    errEl.hidden = true;
+    const url = $('#webhookUrl').value.trim();
+    if (!/^https?:\/\//.test(url)) {
+      errEl.textContent = '请填写 http(s) 地址';
+      errEl.hidden = false;
+      return;
+    }
+    const events = [...document.querySelectorAll('#webhookEvents input:checked')].map((i) => i.value);
+    if (!events.length) {
+      errEl.textContent = '至少订阅一种事件';
+      errEl.hidden = false;
+      return;
+    }
+    try {
+      await api.createWebhook({
+        boardId: state.currentBoardId,
+        url,
+        type: $('#webhookType').value,
+        secret: $('#webhookSecret').value.trim(),
+        events,
+      });
+      toast('Webhook 已添加，下个事件起生效', 'success');
+      $('#webhookUrl').value = '';
+      $('#webhookSecret').value = '';
+      await reload();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    }
+  });
+}
+
 /** 成员弹窗内的增删改（事件委托绑定一次） */
 function bindMembersModal() {
   const modal = $('#modalMembers');
@@ -331,6 +441,7 @@ export function initBoards(callbacks = {}) {
   if (callbacks.closeDrawer) closeDrawerFn = callbacks.closeDrawer;
   if (callbacks.resetListPage) resetListPageFn = callbacks.resetListPage;
   bindMembersModal();
+  bindWebhooksModal();
 
   const sw = $('#boardSwitch');
   const trigger = sw.querySelector('.drop-trigger');
@@ -366,6 +477,14 @@ export function initBoards(callbacks = {}) {
       panel.classList.remove('open');
       trigger.setAttribute('aria-expanded', 'false');
       await openMembersModal();
+      return;
+    }
+
+    // Webhook 通知：owner 专属入口
+    if (e.target.closest('[data-board-webhooks]')) {
+      panel.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+      await openWebhooksModal();
       return;
     }
 

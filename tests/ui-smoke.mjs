@@ -81,6 +81,18 @@ const USERS_FIXTURE = [
   { id: 2, username: 'zhouye', displayName: '周野' },
 ];
 const MEMBERS = { 1: [{ userId: 1, username: 'tester', displayName: '测试用户', role: 'owner' }] };
+const WEBHOOKS = {
+  1: [
+    {
+      id: 81,
+      boardId: 1,
+      url: 'https://hooks.example.com/xyz',
+      type: 'dingtalk',
+      events: ['status'],
+      enabled: true,
+    },
+  ],
+};
 const NOTIFS = [
   {
     id: 91,
@@ -168,6 +180,34 @@ globalThis.fetch = async (url, opts = {}) => {
       json: async () => ({ users: USERS_FIXTURE }),
     };
   }
+  // Webhook 订阅：列表/添加/删除（内存态，按板隔离）
+  if (/\/api\/boards\/\d+\/webhooks/.test(u)) {
+    const bid = Number(u.match(/\/api\/boards\/(\d+)\/webhooks/)[1]);
+    if (!WEBHOOKS[bid]) WEBHOOKS[bid] = [];
+    if (opts?.method === 'POST') {
+      const body = JSON.parse(opts.body);
+      if (!/^https?:\/\//.test(body.url || '')) {
+        return { ok: false, status: 400, json: async () => ({ error: 'Webhook URL 必须是 http(s) 地址' }) };
+      }
+      const wh = {
+        id: Math.max(0, ...WEBHOOKS[bid].map((w) => w.id)) + 1,
+        boardId: bid,
+        url: body.url,
+        type: body.type,
+        events: body.events,
+        enabled: true,
+      };
+      WEBHOOKS[bid].push(wh);
+      return { ok: true, status: 201, json: async () => ({ created: true, webhook: wh }) };
+    }
+    if (opts?.method === 'DELETE') {
+      const id = Number(u.match(/webhooks\/(\d+)/)[1]);
+      WEBHOOKS[bid] = WEBHOOKS[bid].filter((w) => w.id !== id);
+      return { ok: true, status: 200, json: async () => ({ deleted: true, id }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ webhooks: WEBHOOKS[bid] }) };
+  }
+
   // 站内通知：列表/未读数/单条已读/全部已读（内存态）
   if (u.includes('/api/notifications')) {
     if (u.includes('unread_count')) {
@@ -1377,6 +1417,62 @@ console.log('\n--- 站内通知（铃铛/未读徽标/已读） ---');
     '列表内不再有未读条目',
     [...document.querySelectorAll('#notifList .notif-item')].every((i) => !i.classList.contains('unread')),
   );
+  document.body.click();
+  await wait(30);
+}
+
+console.log('\n--- Webhook 管理（owner 弹窗） ---');
+{
+  document.querySelector('#boardSwitch .drop-trigger').click();
+  await wait(30);
+  check('owner 面板有 Webhook 入口', Boolean(document.querySelector('[data-board-webhooks]')));
+  document.querySelector('[data-board-webhooks]').click();
+  await wait(200);
+  check('Webhook 弹窗打开', !$('#modalWebhooks').hidden);
+  check(
+    '已有订阅渲染（钉钉类型徽标）',
+    Boolean(document.querySelector('#webhooksList .webhook-row .webhook-type')),
+    $('#webhooksList').innerHTML.slice(0, 120),
+  );
+  check('添加行可见', $('#webhookAddRow').hidden === false);
+
+  // 非法 URL 被拒
+  $('#webhookUrl').value = 'javascript:alert(1)';
+  $('#webhookAddBtn').click();
+  await wait(100);
+  check(
+    '非法 URL 被前端拦截',
+    $('#webhooksError').hidden === false && /http/.test($('#webhooksError').textContent),
+    $('#webhooksError').textContent,
+  );
+
+  // 合法添加（generic + 两个事件）
+  $('#webhookUrl').value = 'https://my.service/hook';
+  $('#webhookType').value = 'generic';
+  $('#webhookSecret').value = 's3cret';
+  $('#webhookAddBtn').click();
+  await wait(150);
+  check(
+    '添加后列表刷新（2 条）',
+    document.querySelectorAll('#webhooksList .webhook-row').length === 2,
+    String(document.querySelectorAll('#webhooksList .webhook-row').length),
+  );
+  const added = [...document.querySelectorAll('#webhooksList .webhook-url')].find(
+    (u) => u.textContent === 'https://my.service/hook',
+  );
+  check('新订阅 URL 渲染', Boolean(added));
+
+  // 删除
+  const delBtn = document.querySelector('#webhooksList [data-del-id]');
+  delBtn.click();
+  await wait(150);
+  check(
+    '删除后列表刷新',
+    document.querySelectorAll('#webhooksList .webhook-row').length === 1,
+    String(document.querySelectorAll('#webhooksList .webhook-row').length),
+  );
+  document.querySelector('#modalWebhooks [data-close="1"]').click();
+  await wait(30);
   document.body.click();
   await wait(30);
 }

@@ -507,6 +507,49 @@
         </div>
       </div>
 
+      <!-- Webhook 管理（owner 专属操作） -->
+      <div
+        class="modal"
+        id="modalWebhooks"
+        hidden
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="webhooksTitle"
+      >
+        <header class="modal-head">
+          <h2 id="webhooksTitle">Webhook 通知</h2>
+          <button class="icon-btn" type="button" data-close="1" aria-label="关闭">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <p class="form-error" id="webhooksError" hidden></p>
+          <div id="webhooksList" class="webhooks-list"></div>
+          <div class="webhook-add-row" id="webhookAddRow" hidden>
+            <div class="webhook-add-grid">
+              <input id="webhookUrl" type="url" maxlength="512" placeholder="https://...（接收 POST 的端点）" />
+              <select id="webhookType" aria-label="载荷格式">
+                <option value="generic">通用 JSON</option>
+                <option value="dingtalk">钉钉机器人</option>
+                <option value="wecom">企业微信机器人</option>
+                <option value="feishu">飞书机器人</option>
+              </select>
+              <input id="webhookSecret" type="text" maxlength="128" placeholder="签名密钥（可选）" />
+              <button id="webhookAddBtn" class="btn btn-primary" type="button">添加</button>
+            </div>
+            <div class="webhook-events" id="webhookEvents">
+              <label><input type="checkbox" value="status" checked /> 状态流转</label>
+              <label><input type="checkbox" value="assignee" checked /> 指派</label>
+              <label><input type="checkbox" value="comment" checked /> 评论</label>
+            </div>
+          </div>
+          <p class="webhook-hint">事件发生时向端点 POST JSON；通用格式带 X-CloudIssue-Signature（HMAC-SHA256）防伪造。IM 机器人直接粘贴官方文档给出的 Webhook 地址与加签密钥即可。</p>
+          <footer class="modal-foot">
+            <button class="btn btn-ghost" type="button" data-close="1">关闭</button>
+          </footer>
+        </div>
+      </div>
+
       <!-- 拖入失败列：填写原因 -->
       <div
         class="modal modal-sm"

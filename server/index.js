@@ -20,6 +20,7 @@ import { logger } from './logger.js';
 import { callTool, closeMcp } from './mcp-client.js';
 import { authRouter, authRequired } from './auth.js';
 import { mcpHttpRouter, authByToken } from './mcp-http.js';
+import { startWebhookDispatcher, stopWebhookDispatcher } from './webhook-dispatcher.js';
 import { STATUSES, STATUS_LABELS, PRIORITY_LABELS, ISSUE_TYPE_LABELS } from '../shared/constants.js';
 import { matchesFilters, parseExportFilters } from '../shared/issue-filters.js';
 import { toCsv, CSV_BOM } from '../shared/csv.js';
@@ -218,6 +219,57 @@ app.post(
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '非法的通知 ID' });
     const data = await callTool('notification_read', { id });
+    res.json(data);
+  }),
+);
+
+// Webhook 订阅管理：护栏在 MCP 数据层（owner 专属写操作）
+app.get(
+  '/api/boards/:id/webhooks',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '非法的看板 ID' });
+    const data = await callTool('webhook_list', { boardId: id });
+    res.json(data);
+  }),
+);
+
+app.post(
+  '/api/boards/:id/webhooks',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '非法的看板 ID' });
+    const url = String(req.body?.url || '').trim();
+    if (!/^https?:\/\//.test(url)) return res.status(400).json({ error: 'Webhook URL 必须是 http(s) 地址' });
+    const type = req.body?.type || 'generic';
+    if (!['generic', 'dingtalk', 'wecom', 'feishu'].includes(type)) {
+      return res.status(400).json({ error: '非法的 Webhook 类型' });
+    }
+    const events = Array.isArray(req.body?.events) ? req.body.events : ['status', 'assignee', 'comment'];
+    if (events.some((e) => !['status', 'assignee', 'comment'].includes(e))) {
+      return res.status(400).json({ error: '非法的订阅事件' });
+    }
+    const data = await callTool('webhook_create', {
+      boardId: id,
+      url,
+      type,
+      secret: String(req.body?.secret || ''),
+      events,
+      enabled: req.body?.enabled !== false,
+    });
+    res.status(201).json(data);
+  }),
+);
+
+app.delete(
+  '/api/boards/:id/webhooks/:webhookId',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const webhookId = Number(req.params.webhookId);
+    if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(webhookId) || webhookId <= 0) {
+      return res.status(400).json({ error: '非法的 ID' });
+    }
+    const data = await callTool('webhook_delete', { boardId: id, id: webhookId });
     res.json(data);
   }),
 );
@@ -616,6 +668,7 @@ async function start() {
   const server = app.listen(PORT, () => {
     logger.info(`看板已启动： http://localhost:${PORT}`);
   });
+  startWebhookDispatcher();
 
   // 优雅停机：停接新请求 → 关 MCP client（连带终止子进程，子进程清池退出）
   let shuttingDown = false;
@@ -624,6 +677,7 @@ async function start() {
     shuttingDown = true;
     logger.info({ signal }, '收到退出信号，开始优雅停机');
     server.close(async () => {
+      stopWebhookDispatcher();
       await closeMcp();
       process.exit(0);
     });

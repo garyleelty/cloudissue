@@ -26,6 +26,7 @@ const modalConfirm = $('#modalConfirm');
 const modalReason = $('#modalReason');
 const modalBoard = $('#modalBoard');
 const modalMembers = $('#modalMembers');
+const modalWebhooks = $('#modalWebhooks');
 const issueForm = $('#issueForm');
 
 /** @type {() => Promise<void>} */
@@ -42,14 +43,14 @@ const field = (name) => issueForm.elements.namedItem(name);
 
 export function openModal(which) {
   modalRoot.hidden = false;
-  [modalForm, modalConfirm, modalReason, modalBoard, modalMembers].forEach((m) => {
+  [modalForm, modalConfirm, modalReason, modalBoard, modalMembers, modalWebhooks].forEach((m) => {
     m.hidden = m !== which;
   });
 }
 
 export function closeModals() {
   modalRoot.hidden = true;
-  [modalForm, modalConfirm, modalReason, modalBoard, modalMembers].forEach((m) => {
+  [modalForm, modalConfirm, modalReason, modalBoard, modalMembers, modalWebhooks].forEach((m) => {
     m.hidden = true;
   });
 }

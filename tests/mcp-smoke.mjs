@@ -27,6 +27,12 @@ const EXPECTED = [
   'notification_unread_count',
   'notification_read',
   'notification_read_all',
+  // Webhook 订阅
+  'webhook_list',
+  'webhook_create',
+  'webhook_delete',
+  'webhook_pending',
+  'webhook_dispatch_record',
   'issue_list',
   'issue_get',
   'issue_search',

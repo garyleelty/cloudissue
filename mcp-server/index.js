@@ -1449,6 +1449,186 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
     },
   );
 
+  // ------------------------------------------------------------------
+  // Webhook 订阅：看板级外发通知配置（owner 管理；实际投递由 HTTP 分发器
+  // 消费 notifications 事件流完成——人与 AI 的动作都在同一条流上）
+  // ------------------------------------------------------------------
+
+  function shapeWebhook(w) {
+    return {
+      id: Number(w.id),
+      boardId: Number(w.board_id),
+      url: w.url,
+      type: w.type,
+      events: (w.events || '').split(',').filter(Boolean),
+      enabled: Number(w.enabled) === 1,
+      createdAt: toIsoStr(w.created_at),
+    };
+  }
+
+  // 7.16) Webhook 列表（成员可看，便于确认通知去向）
+  server.registerTool(
+    'webhook_list',
+    {
+      description: '返回某看板的 Webhook 订阅列表',
+      inputSchema: {
+        boardId: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      await assertRole(args.boardId, effectiveActorId() ?? args.actorId ?? null, 'viewer');
+      const [rows] = await query('SELECT * FROM webhooks WHERE board_id = ? ORDER BY id ASC', [args.boardId]);
+      return ok({ webhooks: rows.map(shapeWebhook) });
+    },
+  );
+
+  // 7.17) 创建/更新 Webhook（owner 专属；url+type 唯一）
+  server.registerTool(
+    'webhook_create',
+    {
+      description:
+        '给看板添加一个 Webhook 订阅（owner 专属）。type: generic（JSON POST + HMAC 签名头）/ dingtalk / wecom / feishu；events 为要订阅的事件（status,assignee,comment 子集）',
+      inputSchema: {
+        boardId: z.number().int().positive(),
+        url: z
+          .string()
+          .min(1)
+          .max(512)
+          .refine((u) => /^https?:\/\//.test(u), 'Webhook URL 必须是 http(s)'),
+        type: z.enum(['generic', 'dingtalk', 'wecom', 'feishu']).optional().default('generic'),
+        secret: z.string().max(128).optional().default(''),
+        events: z
+          .array(z.enum(['status', 'assignee', 'comment']))
+          .optional()
+          .default(['status', 'assignee', 'comment']),
+        enabled: z.boolean().optional().default(true),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      await assertRole(args.boardId, effectiveActorId() ?? args.actorId ?? null, 'owner');
+      const events = [...new Set(args.events)].join(',');
+      try {
+        const [res] = await query(
+          `INSERT INTO webhooks (board_id, url, type, secret, events, enabled) VALUES (?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE type = VALUES(type), secret = VALUES(secret), events = VALUES(events), enabled = VALUES(enabled)`,
+          [args.boardId, args.url.trim(), args.type, args.secret || '', events, args.enabled ? 1 : 0],
+        );
+        const [[row]] = await query('SELECT * FROM webhooks WHERE id = ?', [res.insertId]);
+        return ok({ created: true, webhook: shapeWebhook(row) });
+      } catch (err) {
+        if (err && err.code === 'ER_DUP_ENTRY') throw bizError('相同 URL 的 Webhook 已存在');
+        throw err;
+      }
+    },
+  );
+
+  // 7.19) 待投递清单（HTTP 分发器专用内部 tool：通知 × 订阅它的 webhook）
+  server.registerTool(
+    'webhook_pending',
+    {
+      description:
+        '内部工具：返回未成功投递且未超重试上限的（站内通知 × 看板 webhook）组合，供 HTTP 分发器消费',
+      inputSchema: {},
+    },
+    async () => {
+      const [rows] = await query(
+        `SELECT n.id AS notif_id, n.board_id, n.issue_id, n.type, n.title, n.actor, n.created_at,
+                w.id AS webhook_id, w.url, w.type AS webhook_type, w.secret
+           FROM notifications n
+           JOIN webhooks w ON w.board_id = n.board_id AND w.enabled = 1
+                AND FIND_IN_SET(n.type, w.events)
+           LEFT JOIN webhook_dispatch d ON d.notification_id = n.id AND d.webhook_id = w.id
+          WHERE n.created_at >= NOW() - INTERVAL 7 DAY
+            AND (d.notification_id IS NULL OR (d.ok = 0 AND d.attempts < ?))
+          ORDER BY n.id ASC
+          LIMIT 50`,
+        [5],
+      );
+      return ok({
+        items: rows.map((r) => ({
+          notification: {
+            id: Number(r.notif_id),
+            board_id: Number(r.board_id),
+            issue_id: Number(r.issue_id),
+            type: r.type,
+            title: r.title,
+            actor: r.actor || '',
+            created_at: toIsoStr(r.created_at),
+          },
+          webhook: {
+            id: Number(r.webhook_id),
+            url: r.url,
+            type: r.webhook_type,
+            secret: r.secret || '',
+          },
+        })),
+      });
+    },
+  );
+
+  // 7.20) 记录投递结果（HTTP 分发器专用；成功标记 dispatched，失败累加 attempts）
+  server.registerTool(
+    'webhook_dispatch_record',
+    {
+      description: '内部工具：记录一次 Webhook 投递结果（成功/失败与错误摘要）',
+      inputSchema: {
+        notificationId: z.number().int().positive(),
+        webhookId: z.number().int().positive(),
+        ok: z.boolean(),
+        error: z.string().max(250).optional().default(''),
+      },
+    },
+    async (args) => {
+      const updated = await withTransaction(async (conn) => {
+        const [[existing]] = await conn.query(
+          'SELECT attempts FROM webhook_dispatch WHERE notification_id = ? AND webhook_id = ? FOR UPDATE',
+          [args.notificationId, args.webhookId],
+        );
+        if (existing) {
+          await conn.query(
+            `UPDATE webhook_dispatch
+                SET ok = ?, attempts = attempts + 1, last_error = ?,
+                    dispatched_at = IF(? , NOW(), dispatched_at)
+              WHERE notification_id = ? AND webhook_id = ?`,
+            [args.ok ? 1 : 0, args.error, args.ok ? 1 : 0, args.notificationId, args.webhookId],
+          );
+          return Number(existing.attempts) + 1;
+        }
+        await conn.query(
+          `INSERT INTO webhook_dispatch (notification_id, webhook_id, ok, attempts, last_error, dispatched_at)
+           VALUES (?, ?, ?, 1, ?, ${args.ok ? 'NOW()' : 'NULL'})`,
+          [args.notificationId, args.webhookId, args.ok ? 1 : 0, args.error],
+        );
+        return 1;
+      });
+      return ok({ recorded: true, attempts: updated });
+    },
+  );
+
+  // 7.18) 删除 Webhook（owner 专属）
+  server.registerTool(
+    'webhook_delete',
+    {
+      description: '删除一个 Webhook 订阅（owner 专属）',
+      inputSchema: {
+        boardId: z.number().int().positive(),
+        id: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      await assertRole(args.boardId, effectiveActorId() ?? args.actorId ?? null, 'owner');
+      const [res] = await query('DELETE FROM webhooks WHERE id = ? AND board_id = ?', [
+        args.id,
+        args.boardId,
+      ]);
+      if (!res.affectedRows) throw bizError('Webhook 不存在或已被删除');
+      return ok({ deleted: true, id: args.id });
+    },
+  );
+
   // 7.15) 全部已读
   server.registerTool(
     'notification_read_all',
