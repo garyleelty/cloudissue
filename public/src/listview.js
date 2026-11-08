@@ -7,13 +7,11 @@
 import { state, notify } from './state.js';
 import { api } from './api.js';
 import { esc, fmtDateTime, dueInfo } from './utils.js';
-import { STATUS_LABELS, PRIORITY_LABELS, ISSUE_TYPE_LABELS, PRIORITIES } from '../../shared/constants.js';
+import { STATUS_LABELS, PRIORITY_LABELS, ISSUE_TYPE_LABELS } from '../../shared/constants.js';
 
 const $ = (sel) => document.querySelector(sel);
 const PAGE_SIZE = 20;
 let listSeq = 0; // 渲染竞态序号：只接受最新一次检索的返回
-
-const PRIORITY_ORDER = Object.fromEntries(PRIORITIES.map((p, i) => [p, i]));
 
 /** 各列定义：key 对应 listSort.key，label 为列头，render 输出单元格 */
 const COLUMNS = [
