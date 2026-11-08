@@ -637,6 +637,57 @@ textarea {
 }
 
 /* ==========================================================================
+   抽屉关联提交
+   ========================================================================== */
+.commit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.commit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.commit-hash {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--surface-sunken);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--blue);
+}
+.commit-msg {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit-ref {
+  color: var(--blue);
+  font-weight: 600;
+}
+.commit-author {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-4);
+}
+.commit-unlink {
+  flex: none;
+  color: var(--text-4);
+}
+.commit-unlink:hover {
+  color: var(--red);
+}
+
+/* ==========================================================================
    Webhook 管理弹窗
    ========================================================================== */
 .webhooks-list {

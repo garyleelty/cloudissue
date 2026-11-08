@@ -221,6 +221,26 @@ CREATE TABLE IF NOT EXISTS `webhook_dispatch` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Webhook 分发记录';
 
 -- ------------------------------------------------------------
+-- 1.10 关联提交（commit message 含 #编号 即关联；来源=手动注册/GitHub webhook）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `issue_commits` (
+  `id`           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `issue_id`     BIGINT UNSIGNED NOT NULL,
+  `repo`         VARCHAR(255)    NOT NULL DEFAULT '' COMMENT '仓库标识（如 owner/name）',
+  `commit_hash`  VARCHAR(40)     NOT NULL COMMENT 'commit SHA',
+  `message`      VARCHAR(512)    NOT NULL DEFAULT '' COMMENT '提交信息首行',
+  `author`       VARCHAR(128)    NOT NULL DEFAULT '' COMMENT '提交作者',
+  `branch`       VARCHAR(128)    NOT NULL DEFAULT '' COMMENT '分支（可空）',
+  `committed_at` DATETIME        NULL COMMENT '提交时间',
+  `created_by`   VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '关联来源（人名/AI/webhook）',
+  `created_at`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_commit` (`issue_id`, `commit_hash`),
+  KEY `idx_commit_hash` (`commit_hash`),
+  CONSTRAINT `fk_commit_issue` FOREIGN KEY (`issue_id`) REFERENCES `issues` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='issue 关联提交';
+
+-- ------------------------------------------------------------
 -- 2. 标签表（一个任务可有多个标签）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `issue_tags` (

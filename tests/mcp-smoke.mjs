@@ -33,6 +33,10 @@ const EXPECTED = [
   'webhook_delete',
   'webhook_pending',
   'webhook_dispatch_record',
+  // Git 提交关联
+  'git_commit_link',
+  'git_commit_unlink',
+  'git_commit_list',
   'issue_list',
   'issue_get',
   'issue_search',

@@ -93,6 +93,21 @@ const WEBHOOKS = {
     },
   ],
 };
+let COMMIT_ROWS = [
+  {
+    id: 71,
+    issueId: 1,
+    repo: 'garyleelty/cloudissue',
+    hash: 'abc1234def5678',
+    shortHash: 'abc1234',
+    message: 'feat: 修复 #1 的登录超时',
+    author: 'garyLi',
+    branch: 'main',
+    committedAt: iso(30000),
+    createdBy: 'github-webhook',
+    createdAt: iso(30000),
+  },
+];
 const NOTIFS = [
   {
     id: 91,
@@ -206,6 +221,17 @@ globalThis.fetch = async (url, opts = {}) => {
       return { ok: true, status: 200, json: async () => ({ deleted: true, id }) };
     }
     return { ok: true, status: 200, json: async () => ({ webhooks: WEBHOOKS[bid] }) };
+  }
+
+  // 关联提交：详情抽屉用
+  const commitsMatch = u.match(/\/api\/issues\/(\d+)\/commits/);
+  if (commitsMatch) {
+    if (opts?.method === 'DELETE') {
+      const hash = u.match(/commits\/([0-9a-f]{7,40})/)?.[1];
+      COMMIT_ROWS = COMMIT_ROWS.filter((c) => c.hash !== hash);
+      return { ok: true, status: 200, json: async () => ({ unlinked: true, hash }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ commits: COMMIT_ROWS }) };
   }
 
   // 站内通知：列表/未读数/单条已读/全部已读（内存态）
@@ -1180,6 +1206,33 @@ console.log('\n--- Markdown 描述渲染（受限渲染器 + XSS 防护） ---')
     descHtml.slice(0, 160),
   );
   check('抽屉描述容器带 md-body 类', Boolean(document.querySelector('#drawerRoot .drawer-desc.md-body')));
+
+  // 关联提交：mock 数据在抽屉刷新时拉取并渲染
+  const gitIssue = mkIssue(9, { boardId: 1, title: 'Git关联卡', status: 'planning', position: 1 });
+  FIXTURE.push(gitIssue);
+  s.issues.push(gitIssue);
+  notify();
+  await wait(80);
+  const gitCardBtn = [...document.querySelectorAll('.card .card-open')].find((c) =>
+    c.textContent.includes('Git关联卡'),
+  );
+  gitCardBtn.click();
+  await wait(250);
+  const commitRows = document.querySelectorAll('#drawerRoot .commit-row');
+  check('抽屉渲染关联提交', commitRows.length === 1, String(commitRows.length));
+  check(
+    '提交信息 #编号 高亮',
+    Boolean(document.querySelector('#drawerRoot .commit-ref')),
+    document.querySelector('#drawerRoot .commit-msg')?.innerHTML,
+  );
+  check('member 可见解除关联按钮', Boolean(document.querySelector('#drawerRoot .commit-unlink')));
+  document.querySelector('#drawerRoot .commit-unlink').click();
+  await wait(200);
+  check(
+    '解除关联后提交行消失',
+    document.querySelectorAll('#drawerRoot .commit-row').length === 0,
+    String(document.querySelectorAll('#drawerRoot .commit-row').length),
+  );
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await wait(50);
 }

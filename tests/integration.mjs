@@ -4,6 +4,7 @@
  *   AUTH_RATE_LIMIT=10000 node server/index.js
  */
 import http from 'node:http';
+import crypto from 'node:crypto';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:5173';
 
@@ -1433,6 +1434,148 @@ async function main() {
   sink.close();
   const delWhBoard = await del(`/api/boards/${whBd}`);
   check('清理 Webhook 测试板', delWhBoard.status === 200);
+
+  console.log('\n--- 22. Git 提交关联（#编号约定 + GitHub webhook） ---');
+  // 纯函数：提取规则
+  const { extractIssueRefs } = await import('../shared/git-commit.js');
+  check(
+    '提取 #编号（去重、忽略代码与 URL）',
+    JSON.stringify(extractIssueRefs('修复 #12 相关问题，见 #12 与 #7；`#99` 不算；https://x/#3 不算')) ===
+      JSON.stringify([12, 7]),
+    JSON.stringify(extractIssueRefs('修复 #12 相关问题，见 #12 与 #7；`#99` 不算；https://x/#3 不算')),
+  );
+
+  // 准备：专用板 + 卡
+  cookieJar = jarA;
+  const gitBoard = await post('/api/boards', { name: `Git板_${uniq}` });
+  const gitBd = gitBoard.data.board?.id;
+  const gitCard = await post('/api/issues', { title: `Git关联卡_${uniq}`, boardId: gitBd });
+  const gitCardId = gitCard.data.id;
+
+  // MCP 注册提交（幂等验证）
+  const link1 = await mcpCall(aiToken, 60, 'tools/call', {
+    name: 'git_commit_link',
+    arguments: {
+      issueId: gitCardId,
+      hash: 'abcdef1234567890abcdef1234567890abcdef12',
+      repo: `garyleelty/cloudissue`,
+      message: `fix: 修复登录问题 #${gitCardId}`,
+      author: 'garyLi',
+      branch: 'main',
+      createdBy: 'ai:ci-bot',
+    },
+  });
+  check(
+    'AI 注册关联提交成功',
+    jsonContent(link1.data)?.linked === true,
+    (link1.data?.result?.content?.[0]?.text || '').slice(0, 140),
+  );
+  const link2 = await mcpCall(aiToken, 61, 'tools/call', {
+    name: 'git_commit_link',
+    arguments: {
+      issueId: gitCardId,
+      hash: 'ABCDEF1234567890ABCDEF1234567890ABCDEF12',
+      message: 'updated message',
+      createdBy: 'ci',
+    },
+  });
+  check(
+    '同 hash 重复注册幂等（大写归一）',
+    jsonContent(link2.data)?.linked === true && jsonContent(link2.data).commit.message === 'updated message',
+    (link2.data?.result?.content?.[0]?.text || '').slice(0, 140),
+  );
+
+  // GitHub push webhook：起一个带 secret 的专属子服务（主服务进程无法动态配 secret）
+  const GSECRET = 'gh-webhook-secret-1';
+  const { spawn } = await import('node:child_process');
+  const ghPort = 5290 + (process.pid % 500);
+  const ghSrv = spawn(process.execPath, ['server/index.js'], {
+    // DB 配置不传：子服务自己读 .env（dotenv 不覆盖显式传入的变量）
+    env: {
+      ...process.env,
+      PORT: String(ghPort),
+      GITHUB_WEBHOOK_SECRET: GSECRET,
+      AUTH_RATE_LIMIT: '20000',
+      API_RATE_LIMIT: '20000',
+    },
+    stdio: 'ignore',
+  });
+  const ghBase = `http://127.0.0.1:${ghPort}`;
+  let ghUp = false;
+  for (let i = 0; i < 30; i++) {
+    ghUp = await fetch(`${ghBase}/api/health`)
+      .then((r) => r.ok)
+      .catch(() => false);
+    if (ghUp) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  check('签名验证子服务就绪', ghUp);
+  const ghPayload = {
+    ref: 'refs/heads/main',
+    repository: { full_name: 'garyleelty/cloudissue' },
+    pusher: { name: 'garyLi' },
+    commits: [
+      {
+        id: '0123456789abcdef0123456789abcdef01234567',
+        message: `feat: 关联演示 #${gitCardId}`,
+        author: { name: 'garyLi' },
+        timestamp: '2026-11-08T12:00:00Z',
+      },
+      { id: 'ffffffffffffffffffffffffffffffffffffffff', message: '无引用的提交' },
+    ],
+  };
+  const ghBody = JSON.stringify(ghPayload);
+  const ghSig = 'sha256=' + crypto.createHmac('sha256', GSECRET).update(ghBody).digest('hex');
+  const ghBad = await fetch(`${ghBase}/api/webhooks/github`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-GitHub-Event': 'push',
+      'X-Hub-Signature-256': 'sha256=deadbeef',
+    },
+    body: ghBody,
+  });
+  check('GitHub webhook 错误签名被拒（401）', ghBad.status === 401, String(ghBad.status));
+  const ghOk = await fetch(`${ghBase}/api/webhooks/github`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': 'push', 'X-Hub-Signature-256': ghSig },
+    body: ghBody,
+  });
+  const ghOut = await ghOk.json();
+  check(
+    'GitHub push webhook 关联成功（linked=1，无引用提交跳过）',
+    ghOk.status === 200 && ghOut.linked === 1 && ghOut.total === 1,
+    JSON.stringify(ghOut),
+  );
+
+  // 列表：3 条（1 MCP + 1 幂等更新 + 1 webhook），按提交时间倒序
+  const commitList = await api(`/api/issues/${gitCardId}/commits`);
+  check(
+    '关联提交列表（2 条：MCP 幂等注册 1 + webhook 1，viewer 可读）',
+    (commitList.data.commits || []).length === 2,
+    JSON.stringify(commitList.data).slice(0, 200),
+  );
+  check(
+    'webhook 来源标记',
+    (commitList.data.commits || []).some(
+      (c) => c.createdBy === 'github-webhook' && c.repo === 'garyleelty/cloudissue',
+    ),
+    JSON.stringify(commitList.data.commits?.[0]),
+  );
+
+  // 解除关联
+  const unlink = await del(`/api/issues/${gitCardId}/commits/abcdef1234567890abcdef1234567890abcdef12`);
+  check('解除关联成功', unlink.status === 200 && unlink.data.unlinked === true, JSON.stringify(unlink.data));
+  const commitList2 = await api(`/api/issues/${gitCardId}/commits`);
+  check(
+    '解除后列表减一',
+    (commitList2.data.commits || []).length === 1,
+    String((commitList2.data.commits || []).length),
+  );
+
+  ghSrv.kill();
+  const delGitBoard = await del(`/api/boards/${gitBd}`);
+  check('清理 Git 测试板', delGitBoard.status === 200);
 
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);

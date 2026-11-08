@@ -43,6 +43,17 @@ export function initDrawer() {
       onEdit?.(issue);
       return;
     }
+    if (act === 'commit-unlink') {
+      const hash = btn.dataset.unlinkHash;
+      try {
+        await api.unlinkCommit(currentIssueId, hash);
+        toast('已解除关联', 'success');
+        await refresh();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+      return;
+    }
     if (act === 'del-comment') {
       const cid = Number(btn.dataset.id);
       try {
@@ -115,9 +126,12 @@ export function drawerIssueId() {
 export async function refresh() {
   if (!currentIssueId) return;
   try {
-    const { issue, comments } = await api.detail(currentIssueId);
+    const [{ issue, comments }, commitsRes] = await Promise.all([
+      api.detail(currentIssueId),
+      api.commits(currentIssueId).catch(() => ({ commits: [] })),
+    ]);
     if (!issue) return closeDrawer();
-    render(issue, comments || []);
+    render(issue, comments || [], commitsRes?.commits || []);
   } catch (err) {
     if (err.status === 404) {
       toast('任务已被删除', 'error');
@@ -166,7 +180,12 @@ function logRowHtml(log) {
     </div>`;
 }
 
-function render(issue, comments) {
+/** 提交信息里 #编号 高亮为可点击（打开对应 issue 抽屉） */
+function highlightRefs(message) {
+  return esc(message).replace(/#(\d+)/g, '<span class="commit-ref">#$1</span>');
+}
+
+function render(issue, comments, commits = []) {
   const me = state.me || null;
   const typeInfo = ISSUE_TYPE_LABELS[issue.type] || ISSUE_TYPE_LABELS.task;
   const { text: dueText } = dueInfo(issue);
@@ -208,6 +227,33 @@ function render(issue, comments) {
 
       ${
         issue.description ? `<div class="drawer-desc md-body">${renderMarkdown(issue.description)}</div>` : ''
+      }
+
+      ${
+        commits.length
+          ? `<section class="drawer-section">
+        <h3>关联提交 <span class="section-count">${commits.length}</span></h3>
+        <div class="commit-list">
+          ${commits
+            .map(
+              (c) => `
+          <div class="commit-row" data-hash="${esc(c.hash)}">
+            <code class="commit-hash">${esc(c.shortHash)}</code>
+            <span class="commit-msg">${highlightRefs(c.message)}</span>
+            ${c.author ? `<span class="commit-author">${esc(c.author)}</span>` : ''}
+            ${
+              myRole() !== 'viewer'
+                ? `<button class="icon-btn commit-unlink" type="button" data-drawer-act="commit-unlink" data-unlink-hash="${esc(c.hash)}" aria-label="解除关联" title="解除关联">
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+                  </button>`
+                : ''
+            }
+          </div>`,
+            )
+            .join('')}
+        </div>
+      </section>`
+          : ''
       }
 
       <section class="drawer-section">

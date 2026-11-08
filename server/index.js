@@ -24,6 +24,7 @@ import { startWebhookDispatcher, stopWebhookDispatcher } from './webhook-dispatc
 import { STATUSES, STATUS_LABELS, PRIORITY_LABELS, ISSUE_TYPE_LABELS } from '../shared/constants.js';
 import { matchesFilters, parseExportFilters } from '../shared/issue-filters.js';
 import { toCsv, CSV_BOM } from '../shared/csv.js';
+import { parseGithubPush } from '../shared/git-commit.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(here, '..');
@@ -51,6 +52,8 @@ const { PORT, API_RATE_LIMIT, AUTH_RATE_LIMIT } = parsedEnv.data;
 // ------------------------------------------------------------------
 const app = express();
 
+const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
+
 // 安全头。本应用同源部署：CSP 允许 self 脚本/样式 + data: 图标
 app.use(
   helmet({
@@ -64,6 +67,60 @@ app.use(
       },
     },
     crossOriginEmbedderPolicy: false,
+  }),
+);
+
+// GitHub push webhook：解析提交信息中的 #编号 自动关联。
+// 必须挂在 express.json 之前——签名验证需要原始字节，全局 json parser 会先消费 body。
+app.post(
+  '/api/webhooks/github',
+  express.raw({ type: '*/*', limit: '1mb' }),
+  asyncHandler(async (req, res) => {
+    const signature = req.headers['x-hub-signature-256'];
+    const secret = process.env.GITHUB_WEBHOOK_SECRET || '';
+    if (secret) {
+      if (!signature || !/^sha256=/.test(String(signature))) {
+        return res.status(401).json({ error: '缺少签名' });
+      }
+      const expect = 'sha256=' + crypto.createHmac('sha256', secret).update(req.body).digest('hex');
+      const a = Buffer.from(String(signature));
+      const b = Buffer.from(expect);
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        return res.status(401).json({ error: '签名不匹配' });
+      }
+    }
+    let payload;
+    try {
+      payload = JSON.parse(req.body.toString('utf8'));
+    } catch {
+      return res.status(400).json({ error: '非法 JSON' });
+    }
+    const event = req.headers['x-github-event'];
+    if (event !== 'push') return res.json({ ignored: true, event });
+
+    const parsed = parseGithubPush(payload, process.env.GITHUB_WEBHOOK_BRANCH || '');
+    if (!parsed) return res.status(400).json({ error: '无法解析的 push 事件' });
+
+    // 逐条注册关联（库内 #编号 可能不存在——跳过而不是失败）
+    let linked = 0;
+    for (const ref of parsed.refs) {
+      try {
+        const r = await callTool('git_commit_link', {
+          issueId: ref.issueId,
+          hash: ref.hash,
+          repo: parsed.repo,
+          message: ref.message,
+          author: ref.author,
+          branch: ref.branch,
+          committedAt: ref.committedAt || undefined,
+          createdBy: 'github-webhook',
+        });
+        if (r?.linked) linked += 1;
+      } catch {
+        /* 编号不存在/无权限：跳过 */
+      }
+    }
+    res.json({ ok: true, repo: parsed.repo, branch: parsed.branch, linked, total: parsed.refs.length });
   }),
 );
 
@@ -113,8 +170,6 @@ app.use('/api/users', authRequired);
 app.use('/api/comments', authRequired);
 app.use('/api/boards', authRequired);
 app.use('/api/notifications', authRequired);
-
-const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
 
 /** 健康检查：确认 MCP 链路与数据库均可用 */
 app.get(
@@ -181,6 +236,30 @@ app.delete(
       return res.status(400).json({ error: '非法的看板 ID' });
     }
     const data = await callTool('board_delete', { id });
+    res.json(data);
+  }),
+);
+
+// issue 关联提交：列表（viewer）/解除（member）
+app.get(
+  '/api/issues/:id/commits',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '非法的任务 ID' });
+    const data = await callTool('git_commit_list', { issueId: id });
+    res.json(data);
+  }),
+);
+
+app.delete(
+  '/api/issues/:id/commits/:hash',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const hash = String(req.params.hash || '');
+    if (!Number.isInteger(id) || id <= 0 || !/^[0-9a-f]{7,40}$/i.test(hash)) {
+      return res.status(400).json({ error: '非法参数' });
+    }
+    const data = await callTool('git_commit_unlink', { issueId: id, hash });
     res.json(data);
   }),
 );

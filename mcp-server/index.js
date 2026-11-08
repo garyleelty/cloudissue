@@ -1357,6 +1357,136 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
   );
 
   // ------------------------------------------------------------------
+  // Git 提交关联：commit message 含 #编号 即关联到 issue。
+  // 来源：MCP 工具（CI/脚本/AI 调用）+ GitHub webhook（HTTP 层解析后落库）。
+  // 提取规则前后端共用（shared/git-commit.js），这里只做存储与查询。
+  // ------------------------------------------------------------------
+
+  function shapeCommit(c) {
+    return {
+      id: Number(c.id),
+      issueId: Number(c.issue_id),
+      repo: c.repo || '',
+      hash: c.commit_hash,
+      shortHash: (c.commit_hash || '').slice(0, 7),
+      message: c.message || '',
+      author: c.author || '',
+      branch: c.branch || '',
+      committedAt: toIsoStr(c.committed_at),
+      createdBy: c.created_by || '',
+      createdAt: toIsoStr(c.created_at),
+    };
+  }
+
+  // 7.21) 注册关联提交（幂等：同 issue+hash 重复注册只更新元数据）
+  server.registerTool(
+    'git_commit_link',
+    {
+      description:
+        '把一个 Git 提交关联到 issue（幂等）。供 CI/脚本/AI 调用：提交信息含 #编号 的 commit 注册后即在该 issue 详情展示',
+      inputSchema: {
+        issueId: z.number().int().positive(),
+        hash: z
+          .string()
+          .min(7)
+          .max(40)
+          .regex(/^[0-9a-f]+$/i, 'commit hash 需为 7-40 位十六进制'),
+        repo: z.string().max(255).optional().default(''),
+        message: z.string().max(512).optional().default(''),
+        author: z.string().max(128).optional().default(''),
+        branch: z.string().max(128).optional().default(''),
+        committedAt: z.string().optional().describe('提交时间 ISO 串，缺省用当前时间'),
+        createdBy: z.string().max(64).optional().default(''),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const [[issue]] = await query(`${ISSUE_SELECT} WHERE i.id = ?`, [args.issueId]);
+      if (!issue) throw bizError('任务不存在或已被删除');
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      // 身份规则：有调用者身份 → 需 member；无身份 = 系统集成来源
+      //（只有 HTTP 进程内部的 GitHub webhook 验签路由会以无身份调用本工具）→ 放行
+      if (actorId) await assertRole(issue.board_id, actorId, 'member');
+
+      const committedAt = args.committedAt ? new Date(args.committedAt) : null;
+      const ts = committedAt && !Number.isNaN(committedAt.getTime()) ? committedAt : new Date();
+      await query(
+        `INSERT INTO issue_commits (issue_id, repo, commit_hash, message, author, branch, committed_at, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE repo = VALUES(repo), message = VALUES(message), author = VALUES(author),
+           branch = VALUES(branch), committed_at = VALUES(committed_at)`,
+        [
+          args.issueId,
+          args.repo || '',
+          args.hash.toLowerCase(),
+          args.message || '',
+          args.author || '',
+          args.branch || '',
+          ts,
+          args.createdBy || '',
+        ],
+      );
+      const [[row]] = await query('SELECT * FROM issue_commits WHERE issue_id = ? AND commit_hash = ?', [
+        args.issueId,
+        args.hash.toLowerCase(),
+      ]);
+      return ok({ linked: true, commit: shapeCommit(row) });
+    },
+  );
+
+  // 7.22) 解除关联（member；按 hash）
+  server.registerTool(
+    'git_commit_unlink',
+    {
+      description: '解除一个提交与 issue 的关联（按 commit hash）',
+      inputSchema: {
+        issueId: z.number().int().positive(),
+        hash: z
+          .string()
+          .min(7)
+          .max(40)
+          .regex(/^[0-9a-f]+$/i),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const [[issue]] = await query('SELECT board_id FROM issues WHERE id = ?', [args.issueId]);
+      if (!issue) throw bizError('任务不存在或已被删除');
+      const actorId = effectiveActorId() ?? args.actorId ?? null;
+      // 同 git_commit_link：无身份 = 系统集成来源（GitHub webhook），放行
+      if (actorId) await assertRole(issue.board_id, actorId, 'member');
+      const [res] = await query('DELETE FROM issue_commits WHERE issue_id = ? AND commit_hash = ?', [
+        args.issueId,
+        args.hash.toLowerCase(),
+      ]);
+      if (!res.affectedRows) throw bizError('该提交未关联到此任务');
+      return ok({ unlinked: true, hash: args.hash.toLowerCase() });
+    },
+  );
+
+  // 7.23) 关联提交列表（读 issue 详情的组成部分；viewer 可读）
+  server.registerTool(
+    'git_commit_list',
+    {
+      description: '返回某 issue 的关联提交（最新提交在前）',
+      inputSchema: {
+        issueId: z.number().int().positive(),
+        actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
+      },
+    },
+    async (args) => {
+      const [[issue]] = await query('SELECT board_id FROM issues WHERE id = ?', [args.issueId]);
+      if (!issue) throw bizError('任务不存在或已被删除');
+      await assertRole(issue.board_id, effectiveActorId() ?? args.actorId ?? null, 'viewer');
+      const [rows] = await query(
+        'SELECT * FROM issue_commits WHERE issue_id = ? ORDER BY committed_at DESC, id DESC LIMIT 50',
+        [args.issueId],
+      );
+      return ok({ commits: rows.map(shapeCommit) });
+    },
+  );
+
+  // ------------------------------------------------------------------
   // 站内通知：接收人=自己（用户维度隔离，无越权面）；actor 快照含 AI 自报名
   // ------------------------------------------------------------------
 

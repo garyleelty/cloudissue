@@ -153,6 +153,10 @@ export const api = {
   },
   /** issue 详情（含评论全文） */
   detail: (id) => request(`/api/issues/${id}`),
+  /** 关联提交列表（#编号约定的 Git 提交） */
+  commits: (id) => request(`/api/issues/${id}/commits`),
+  /** @param {number} id @param {string} hash 解除提交关联（member） */
+  unlinkCommit: (id, hash) => request(`/api/issues/${id}/commits/${hash}`, { method: 'DELETE' }),
   /** 全部用户（负责人选择器等） */
   users: () => request('/api/users'),
   /** 添加评论，返回 { id, comments } */
