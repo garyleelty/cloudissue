@@ -11,6 +11,7 @@
 import crypto from 'node:crypto';
 import { callTool } from './mcp-client.js';
 import { logger } from './logger.js';
+import { broadcastChanged } from './bus.js';
 
 const DISPATCH_INTERVAL = Number(process.env.WEBHOOK_DISPATCH_INTERVAL || 10_000);
 // 重试上限（attempts < 5）在数据层 webhook_pending 查询里判定，这里只负责投递
@@ -108,6 +109,8 @@ export async function dispatchOnce() {
   }
   if (pending.items.length) {
     logger.info({ total: pending.items.length, delivered }, 'webhook dispatch round');
+    // 兜底广播：AI 动作不经 HTTP 路由，靠分发器轮询发现新事件后补推（≤ 轮询周期）
+    broadcastChanged('dispatcher');
   }
   return delivered;
 }

@@ -21,6 +21,7 @@ import { callTool, closeMcp } from './mcp-client.js';
 import { authRouter, authRequired } from './auth.js';
 import { mcpHttpRouter, authByToken } from './mcp-http.js';
 import { startWebhookDispatcher, stopWebhookDispatcher } from './webhook-dispatcher.js';
+import { broadcastChanged, onChanged } from './bus.js';
 import { STATUSES, STATUS_LABELS, PRIORITY_LABELS, ISSUE_TYPE_LABELS } from '../shared/constants.js';
 import { matchesFilters, parseExportFilters } from '../shared/issue-filters.js';
 import { toCsv, CSV_BOM } from '../shared/csv.js';
@@ -134,6 +135,18 @@ if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
 app.use((req, res, next) => {
   req.id = crypto.randomUUID();
   res.setHeader('x-request-id', req.id);
+  // 写操作成功后广播（SSE 实时推送；Fire-and-forget）
+  res.on('finish', () => {
+    const m = req.method;
+    if (m === 'GET' || res.statusCode >= 400) return;
+    if (
+      req.path.startsWith('/api/issues') ||
+      req.path.startsWith('/api/boards') ||
+      req.path.startsWith('/api/comments')
+    ) {
+      broadcastChanged('http');
+    }
+  });
   next();
 });
 
@@ -171,6 +184,39 @@ app.use('/api/comments', authRequired);
 app.use('/api/boards', authRequired);
 app.use('/api/notifications', authRequired);
 
+// SSE 实时推送：写操作即时广播（Web 来源）+ 分发器兜底（AI 动作，≤ 轮询周期）
+const sseClients = new Set();
+onChanged(() => {
+  for (const client of sseClients) {
+    try {
+      client.write('event: changed\ndata: {}\n\n');
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+});
+app.get('/api/events', authRequired, (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(': connected\n\n');
+  sseClients.add(res);
+  const ping = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      /* 写失败由 close 清理 */
+    }
+  }, 25_000);
+  req.on('close', () => {
+    clearInterval(ping);
+    sseClients.delete(res);
+  });
+});
+
 /** 健康检查：确认 MCP 链路与数据库均可用 */
 app.get(
   '/api/health',
@@ -188,13 +234,16 @@ function boardIdOf(req) {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
-/** 获取任务列表：?boardId= 只取该看板，缺省返回全部看板的任务 */
+/** 获取任务列表：?boardId= 只取该看板，缺省返回全部看板的任务；limit/offset 为安全阀 */
 app.get(
   '/api/issues',
   asyncHandler(async (req, res) => {
     const boardId = boardIdOf(req);
     if (boardId === undefined) return res.status(400).json({ error: '非法的看板 ID' });
-    const data = await callTool('issue_list', boardId ? { boardId } : {});
+    const args = boardId ? { boardId } : {};
+    if (req.query.limit) args.limit = Math.min(Number(req.query.limit) || 50, 500);
+    if (req.query.offset) args.offset = Number(req.query.offset) || 0;
+    const data = await callTool('issue_list', args);
     res.json(data);
   }),
 );
@@ -466,6 +515,40 @@ app.get(
   '/api/users',
   asyncHandler(async (_req, res) => {
     const data = await callTool('user_list');
+    res.json(data);
+  }),
+);
+
+/** 服务端检索：与 Web 筛选同源的维度 + 排序 + 分页（列表视图数据源） */
+app.get(
+  '/api/issues/search',
+  asyncHandler(async (req, res) => {
+    const q = req.query;
+    const args = {
+      limit: Math.min(Number(q.limit) || 50, 200),
+      offset: Number(q.offset) || 0,
+      sort: ['id', 'title', 'status', 'priority', 'assignee', 'dueDate', 'updatedAt', 'type'].includes(q.sort)
+        ? q.sort
+        : 'id',
+      order: q.order === 'desc' ? 'desc' : 'asc',
+    };
+    if (q.q) args.keyword = String(q.q).slice(0, 255);
+    if (q.status && ['backlog', 'planning', 'in_progress', 'done', 'failed'].includes(q.status)) {
+      args.status = q.status;
+    }
+    if (q.type && ['bug', 'feature', 'task', 'chore', 'docs'].includes(q.type)) args.type = q.type;
+    if (q.priority && ['high', 'medium', 'low'].includes(q.priority)) args.priority = q.priority;
+    if (q.tag) args.tag = String(q.tag).slice(0, 48);
+    if (q.aiOnly === '1') args.aiOnly = true;
+    if (q.assigneeId) {
+      args.assigneeId = Number(q.assigneeId) > 0 ? Number(q.assigneeId) : null;
+    } else if (q.assigneeId === 'none') {
+      args.assigneeId = null;
+    }
+    const boardId = boardIdOf(req);
+    if (boardId === undefined) return res.status(400).json({ error: '非法的看板 ID' });
+    if (boardId) args.boardId = boardId;
+    const data = await callTool('issue_search', args);
     res.json(data);
   }),
 );

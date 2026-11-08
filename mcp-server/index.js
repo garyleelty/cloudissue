@@ -557,6 +557,13 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
         '返回任务列表（含标签与状态变更记录）；传 boardId 只取该看板（需为该看板成员），不传返回你有成员关系的全部看板的任务',
       inputSchema: {
         boardId: z.number().int().positive().optional().describe('只返回该看板的任务'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('安全阀：最多返回 N 条（缺省全量，看板视图语义依赖全量）'),
+        offset: z.number().int().nonnegative().optional().default(0),
         actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
       },
     },
@@ -564,7 +571,11 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
       const actorId = effectiveActorId() ?? args.actorId ?? null;
       const boardId = args?.boardId ?? null;
       if (boardId) await assertRole(boardId, actorId, 'viewer');
-      return ok({ issues: await fetchBoard({ boardId, actorId }) });
+      let issues = await fetchBoard({ boardId, actorId });
+      if (args?.limit != null) {
+        issues = issues.slice(args.offset ?? 0, (args.offset ?? 0) + args.limit);
+      }
+      return ok({ issues });
     },
   );
 
@@ -1024,7 +1035,14 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
         type: z.enum(ISSUE_TYPES).optional(),
         assigneeId: z.number().int().positive().nullable().optional(),
         priority: PriorityEnum.optional(),
+        tag: z.string().max(48).optional().describe('按标签过滤（单个标签）'),
+        aiOnly: z.boolean().optional().describe('只看被 AI 操作过的 issue'),
         boardId: z.number().int().positive().optional().describe('只在该看板内检索'),
+        sort: z
+          .enum(['id', 'title', 'status', 'priority', 'assignee', 'dueDate', 'updatedAt', 'type'])
+          .optional()
+          .default('id'),
+        order: z.enum(['asc', 'desc']).optional().default('asc'),
         limit: z.number().int().positive().max(200).optional().default(50),
         offset: z.number().int().nonnegative().optional().default(0),
         actorId: z.number().int().positive().optional().describe('内部注入的调用者 id，外部调用请忽略'),
@@ -1043,11 +1061,32 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
       if (args.status) issues = issues.filter((i) => i.status === args.status);
       if (args.type) issues = issues.filter((i) => (i.type || 'task') === args.type);
       if (args.priority) issues = issues.filter((i) => i.priority === args.priority);
+      if (args.tag) issues = issues.filter((i) => (i.tags || []).includes(args.tag));
+      if (args.aiOnly) {
+        issues = issues.filter((i) => (i.logs || []).some((l) => (l.actor || '').startsWith('ai:')));
+      }
       if (args.assigneeId !== undefined) {
         issues = issues.filter((i) =>
           args.assigneeId === null ? i.assigneeId == null : i.assigneeId === args.assigneeId,
         );
       }
+
+      // 排序（与 Web 列表视图同键）：priority 按高中低、status 按列序、其余按值/locale
+      const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
+      const mul = args.order === 'desc' ? -1 : 1;
+      const key = args.sort;
+      issues.sort((a, b) => {
+        if (key === 'priority') {
+          return ((PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9)) * mul;
+        }
+        if (key === 'status') {
+          return (STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status)) * mul;
+        }
+        const va = a[key] ?? '';
+        const vb = b[key] ?? '';
+        if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mul;
+        return String(va).localeCompare(String(vb), 'zh') * mul;
+      });
 
       const total = issues.length;
       const slice = issues.slice(args.offset, args.offset + args.limit).map((i) => {

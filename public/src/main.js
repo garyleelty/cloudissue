@@ -52,6 +52,28 @@ import { STATUSES, STATUS_LABELS, FAIL_STATUS, MOBILE_BREAKPOINT } from '../../s
 import { LANE_DIMS, LANE_DIM_LABELS } from '../../shared/swimlane.js';
 import { initNotifications, refreshUnread, refreshNotificationsSoon, showNotifUI } from './notifications.js';
 
+/** SSE 实时推送：服务端广播 changed → 合并去抖后重拉（替代 30s 轮询的主通道，轮询保留为兜底） */
+let sseSource = null;
+let sseDebounce = null;
+function startEventStream() {
+  if (sseSource || typeof EventSource !== 'function') return;
+  sseSource = new EventSource('/api/events');
+  sseSource.addEventListener('changed', () => {
+    clearTimeout(sseDebounce);
+    sseDebounce = setTimeout(() => {
+      load();
+      refreshUnread();
+    }, 120);
+  });
+  sseSource.onerror = () => {
+    // 连接断开：EventSource 会自动重连；期间 30s 轮询兜底
+  };
+}
+function stopEventStream() {
+  sseSource?.close();
+  sseSource = null;
+}
+
 const $ = (sel) => document.querySelector(sel);
 const board = $('#board');
 const colTabs = $('#colTabs');
@@ -131,6 +153,7 @@ function showAuth() {
   closeDrawer();
   $('#boardSwitch').hidden = true;
   showNotifUI(false);
+  stopEventStream();
   syncWriteUI();
   authView.hidden = false;
   $('#userChip').hidden = true;
@@ -150,6 +173,7 @@ async function showBoard(user) {
   $('#btnLogout').hidden = false;
   // 先看板列表、后任务：load 依赖 currentBoardId，顺序不能反
   showNotifUI(true);
+  startEventStream();
   await refreshUnread();
   loadBoards().then((ok) => {
     syncWriteUI();

@@ -178,6 +178,7 @@ globalThis.DataTransfer = window.DataTransfer;
 
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
+  if (u.includes('search') || u.includes('/api/issues')) console.error('DBG mock url:', u.slice(0, 90));
   if (u.includes('/api/health')) {
     return { ok: true, status: 200, json: async () => ({ ok: true, connected: true, db: 'issue_board' }) };
   }
@@ -321,6 +322,43 @@ globalThis.fetch = async (url, opts = {}) => {
     }
     return { ok: true, status: 200, json: async () => ({ boards: BOARDS }) };
   }
+  // 服务端检索（列表视图数据源）：按服务端语义实现过滤/排序/分页
+  if (u.includes('/api/issues/search')) {
+    const qs = new URLSearchParams(u.split('?')[1] || '');
+    const boardId = Number(qs.get('boardId') || 0);
+    let rows = FIXTURE.filter((i) => !boardId || i.boardId === boardId);
+    const q = qs.get('q');
+    if (q)
+      rows = rows.filter((i) =>
+        `#${i.id} ${i.title} ${i.description}`.toLowerCase().includes(q.toLowerCase()),
+      );
+    const prio = qs.get('priority');
+    if (prio) rows = rows.filter((i) => prio.split(',').includes(i.priority));
+    const tag = qs.get('tag');
+    if (tag) rows = rows.filter((i) => (i.tags || []).includes(tag));
+    const assignee = qs.get('assignee');
+    if (assignee) rows = rows.filter((i) => assignee.split(',').includes(String(i.assigneeId ?? '_none')));
+    if (qs.get('aiOnly') === '1')
+      rows = rows.filter((i) => (i.logs || []).some((l) => (l.actor || '').startsWith('ai:')));
+    const RANK = { high: 0, medium: 1, low: 2 };
+    const sort = qs.get('sort') || 'id';
+    const mul = qs.get('order') === 'desc' ? -1 : 1;
+    rows = [...rows].sort((a, b) => {
+      if (sort === 'priority') return ((RANK[a.priority] ?? 9) - (RANK[b.priority] ?? 9)) * mul;
+      const va = a[sort] ?? '';
+      const vb = b[sort] ?? '';
+      return String(va).localeCompare(String(vb), 'zh') * mul;
+    });
+    const total = rows.length;
+    const offset = Number(qs.get('offset') || 0);
+    const limit = Number(qs.get('limit') || 20);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ total, limit, offset, issues: rows.slice(offset, offset + limit) }),
+    };
+  }
+
   // issue 详情（抽屉用）：从 FIXTURE 取，附两条评论
   const detailMatch = u.match(/\/api\/issues\/(\d+)$/);
   if (detailMatch) {

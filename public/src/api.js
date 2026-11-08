@@ -151,6 +151,11 @@ export const api = {
       filename,
     };
   },
+  /** 服务端检索：与 Web 筛选同源的维度 + 排序 + 分页（列表视图数据源） */
+  searchIssues: (params) => {
+    const qs = new URLSearchParams(params);
+    return request(`/api/issues/search?${qs}`);
+  },
   /** issue 详情（含评论全文） */
   detail: (id) => request(`/api/issues/${id}`),
   /** 关联提交列表（#编号约定的 Git 提交） */

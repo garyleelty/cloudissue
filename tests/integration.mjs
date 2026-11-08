@@ -1577,6 +1577,128 @@ async function main() {
   const delGitBoard = await del(`/api/boards/${gitBd}`);
   check('清理 Git 测试板', delGitBoard.status === 200);
 
+  console.log('\n--- 23. 服务端分页与推送（search / issue_list 安全阀 / SSE） ---');
+  // 复用 jarA（owner）与通知演示板的语境——建独立数据
+  cookieJar = jarA;
+  const pgBoard = await post('/api/boards', { name: `分页板_${uniq}` });
+  const pgBd = pgBoard.data.board?.id;
+  const ids = [];
+  for (let i = 1; i <= 7; i += 1) {
+    const c = await post('/api/issues', {
+      title: `分页卡${i}_${uniq}`,
+      boardId: pgBd,
+      priority: i % 2 === 0 ? 'high' : 'low',
+      tags: i === 1 ? ['分页标签'] : [],
+    });
+    ids.push(c.data.id);
+  }
+  check('分页测试数据就绪（7 张卡）', ids.length === 7);
+
+  // search：分页 + total
+  const page1 = await api(`/api/issues/search?boardId=${pgBd}&limit=3&offset=0&sort=id&order=asc`);
+  check(
+    'search 分页第一页（3 条 + total=7）',
+    (page1.data.issues || []).length === 3 && page1.data.total === 7,
+    JSON.stringify({ n: page1.data.issues?.length, total: page1.data.total }),
+  );
+  const page3 = await api(`/api/issues/search?boardId=${pgBd}&limit=3&offset=6`);
+  check(
+    'search 第三页（余 1 条）',
+    (page3.data.issues || []).length === 1,
+    String((page3.data.issues || []).length),
+  );
+
+  // search：tag / aiOnly / priority 过滤
+  const byTag = await api(`/api/issues/search?boardId=${pgBd}&tag=${encodeURIComponent('分页标签')}`);
+  check(
+    'search 按标签过滤',
+    byTag.data.total === 1 && byTag.data.issues[0].id === ids[0],
+    JSON.stringify(byTag.data).slice(0, 120),
+  );
+  const byPrio = await api(`/api/issues/search?boardId=${pgBd}&priority=high`);
+  check('search 按优先级过滤', byPrio.data.total === 3, String(byPrio.data.total));
+
+  // search：排序（priority asc → low 在前；desc → high 在前）
+  const asc = await api(`/api/issues/search?boardId=${pgBd}&sort=priority&order=asc&limit=1`);
+  check(
+    'search 排序 asc（高优先级在前，与 Web 列表一致）',
+    asc.data.issues[0].priority === 'high',
+    JSON.stringify(asc.data.issues[0]?.priority),
+  );
+  const desc = await api(`/api/issues/search?boardId=${pgBd}&sort=priority&order=desc&limit=1`);
+  check(
+    'search 排序 desc（低优先级在前）',
+    desc.data.issues[0].priority === 'low',
+    JSON.stringify(desc.data.issues[0]?.priority),
+  );
+
+  // 未登录 401
+  const pgSavedJar = cookieJar;
+  cookieJar = '';
+  const anonSearch = await api('/api/issues/search');
+  check('未登录 search 返回 401', anonSearch.status === 401, String(anonSearch.status));
+  cookieJar = pgSavedJar;
+
+  // issue_list 安全阀
+  const limited = await api(`/api/issues?boardId=${pgBd}&limit=2`);
+  check(
+    'issue_list limit 安全阀',
+    (limited.data.issues || []).length === 2,
+    String((limited.data.issues || []).length),
+  );
+  const full = await api(`/api/issues?boardId=${pgBd}`);
+  check(
+    'issue_list 缺省仍全量（看板视图兼容）',
+    (full.data.issues || []).length === 7,
+    String((full.data.issues || []).length),
+  );
+
+  // SSE：连接 → 触发写操作 → 收到 changed 事件
+  const sseEvents = [];
+  const sseCtrl = new AbortController();
+  const sseDone = (async () => {
+    try {
+      const res = await fetch(`${BASE}/api/events`, {
+        headers: { Cookie: cookieJar },
+        signal: sseCtrl.signal,
+      });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        if (buf.includes('event: changed')) {
+          sseEvents.push('changed');
+          break;
+        }
+      }
+    } catch {
+      /* 中断 */
+    }
+  })();
+  await new Promise((r) => setTimeout(r, 600)); // 等 SSE 建连
+  await post('/api/issues', { title: `SSE触发卡_${uniq}`, boardId: pgBd });
+  const sseTimeout = await Promise.race([
+    sseDone.then(() => true),
+    new Promise((r) => setTimeout(() => r(false), 8000)),
+  ]);
+  sseCtrl.abort();
+  check(
+    'SSE 收到写操作广播（changed）',
+    sseTimeout === true && sseEvents.length === 1,
+    `events=${sseEvents.length}`,
+  );
+  const sseAnon = await fetch(`${BASE}/api/events`);
+  check('未登录 SSE 返回 401', sseAnon.status === 401, String(sseAnon.status));
+
+  // 清理
+  for (const id of ids) await del(`/api/issues/${id}`);
+  await del(`/api/issues/${(await api(`/api/issues/search?boardId=${pgBd}&q=SSE`)).data.issues?.[0]?.id}`);
+  const delPgBoard = await del(`/api/boards/${pgBd}`);
+  check('清理分页测试板', delPgBoard.status === 200);
+
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
   console.log(`=====================================\n`);
