@@ -595,6 +595,19 @@ DELETE FROM board_meta WHERE meta_key = 'seeded_at';
 
 ---
 
+## 实时推送与服务端检索
+
+- **SSE 实时推送**：登录后自动订阅 `/api/events`——任何写操作（Web 或 AI）成功后
+  全端 <100ms 收到 `changed` 事件并自动重拉；AI 动作由分发器轮询兜底（≤10s）；
+  30s 轮询保留为断线兜底。反向代理需关闭缓冲（`X-Accel-Buffering: no` 已内置）。
+- **服务端检索**：`GET /api/issues/search`——与 Web 筛选同源的维度
+  （q/priority/tag/assignee/aiOnly/boardId）+ 排序（sort/order）+ 分页（limit/offset），
+  返回 `total`。**列表视图**的数据源即此端点：筛选/排序/分页全部服务端化，
+  大数据量下列表视图不再受客户端内存约束；看板视图保持全量（拖拽排序语义依赖）。
+- **issue_list 安全阀**：`?limit=&offset=` 可选截断（缺省全量）。
+
+---
+
 ## Webhook 外发通知
 
 看板所有者在顶栏「看板切换器 → Webhook 通知」配置端点。事件（状态流转 / 指派 / 评论）
