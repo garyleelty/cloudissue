@@ -608,6 +608,28 @@ DELETE FROM board_meta WHERE meta_key = 'seeded_at';
 
 ---
 
+## OAuth 登录
+
+支持第三方授权码登录（当前内置 **GitHub**；注册表已为飞书/企微预留）。配置环境变量后，
+登录卡片自动出现「使用 GitHub 登录」按钮：
+
+```bash
+# .env（GitHub → Settings → Developer settings → OAuth Apps 创建应用）
+GITHUB_CLIENT_ID=xxx
+GITHUB_CLIENT_SECRET=xxx
+# 回调地址填：http://<你的部署地址>/api/auth/oauth/github/callback
+# （可选）指定只接受某分支推送的 webhook 分支：GITHUB_WEBHOOK_BRANCH=main
+```
+
+- **新用户**：第三方登录自动建号（`gith_<login>` 用户名、随机不可登录口令），
+  可之后用「改密」设置密码；
+- **老用户绑定**：登录后再次点击第三方登录，身份绑定到当前账号；
+- **冲突保护**：第三方身份已被其他账号绑定时，登录态下回调返回 409 而非静默切号；
+- **安全**：state 双保险（HMAC 签名 10 分钟时效 + httpOnly cookie 双比对）、
+  client_secret 永不出服务、身份表唯一约束。
+
+---
+
 ## Webhook 外发通知
 
 看板所有者在顶栏「看板切换器 → Webhook 通知」配置端点。事件（状态流转 / 指派 / 评论）

@@ -58,6 +58,8 @@ export const api = {
   /** @param {{ username: string, password: string, displayName?: string }} payload */
   register: (payload) => request('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
   logout: () => request('/api/auth/logout', { method: 'POST' }),
+  /** 服务端已配置的 OAuth provider 列表 */
+  oauthProviders: () => request('/api/auth/oauth/providers'),
   /** @param {{ oldPassword: string, newPassword: string }} payload */
   changePassword: (payload) =>
     request('/api/auth/password', { method: 'PUT', body: JSON.stringify(payload) }),

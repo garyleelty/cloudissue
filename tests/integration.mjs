@@ -1699,6 +1699,228 @@ async function main() {
   const delPgBoard = await del(`/api/boards/${pgBd}`);
   check('清理分页测试板', delPgBoard.status === 200);
 
+  console.log('\n--- 24. OAuth 登录（GitHub 授权码流程，mock provider） ---');
+  // mock provider：/authorize 302 回调、/token 换 code、/user 返回身份
+  const ghUsers = {
+    1001: { login: 'octocat_e2e', name: 'Octo E2E' },
+    1002: { login: 'octocat_second', name: 'Octo Two' },
+  };
+  const oauthCodes = new Map(); // code -> userId
+  let codeSeq = 0;
+  const mockProvider = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://mock');
+    if (u.pathname === '/authorize') {
+      const code = `mockcode_${++codeSeq}`;
+      const redirect = new URL(u.searchParams.get('redirect_uri'));
+      redirect.searchParams.set('code', code);
+      redirect.searchParams.set('state', u.searchParams.get('state'));
+      res.writeHead(302, { Location: redirect.toString() });
+      res.end();
+      return;
+    }
+    if (u.pathname === '/token') {
+      let raw = '';
+      req.on('data', (c) => (raw += c));
+      req.on('end', () => {
+        const body = JSON.parse(raw || '{}');
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ access_token: body.code })); // 直接以 code 充当 token，/user 按 code 反查身份
+      });
+      return;
+    }
+    if (u.pathname === '/user') {
+      const at = String(req.headers.authorization || '').replace('Bearer ', '');
+      const uid = oauthCodes.get(at) || '1001';
+      console.error('DBG mock /user at:', at.slice(0, 40), '-> uid:', uid);
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ id: uid, login: ghUsers[uid].login, name: ghUsers[uid].name }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise((r) => mockProvider.listen(0, '127.0.0.1', r));
+  const mpPort = mockProvider.address().port;
+
+  // 专属子服务：配置 OAuth（mock 端点 + client 凭据），独立端口
+  const oauthPort = 5390 + (process.pid % 400);
+  const oauthSrv = spawn(process.execPath, ['server/index.js'], {
+    env: {
+      ...process.env,
+      PORT: String(oauthPort),
+      GITHUB_CLIENT_ID: 'mock-client-id',
+      GITHUB_CLIENT_SECRET: 'mock-client-secret',
+      OAUTH_GITHUB_AUTH_URL: `http://127.0.0.1:${mpPort}/authorize`,
+      OAUTH_GITHUB_TOKEN_URL: `http://127.0.0.1:${mpPort}/token`,
+      OAUTH_GITHUB_USER_URL: `http://127.0.0.1:${mpPort}/user`,
+      AUTH_RATE_LIMIT: '20000',
+      API_RATE_LIMIT: '20000',
+    },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  const ob = `http://127.0.0.1:${oauthPort}`;
+  let obUp = false;
+  for (let i = 0; i < 30; i++) {
+    obUp = await fetch(`${ob}/api/health`)
+      .then((r) => r.ok)
+      .catch(() => false);
+    if (obUp) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  check('OAuth 子服务就绪', obUp);
+
+  // providers 列表（公开）
+  const provs = await fetch(`${ob}/api/auth/oauth/providers`).then((r) => r.json());
+  check(
+    'providers 列表返回已配置的 github',
+    (provs.providers || []).some((p) => p.id === 'github' && p.enabled),
+    JSON.stringify(provs),
+  );
+
+  // 完整授权码流程：start 302 → 跟随到 mock authorize → 302 回 callback → 会话 cookie
+  const startRes = await fetch(`${ob}/api/auth/oauth/github/start`, { redirect: 'manual' });
+  check('start 302 到授权页', startRes.status === 302, String(startRes.status));
+  const authorizeUrl = startRes.headers.get('location');
+  check(
+    '授权 URL 带 client_id 与 state',
+    /client_id=mock-client-id/.test(authorizeUrl) && /state=github\./.test(authorizeUrl),
+    authorizeUrl.slice(0, 90),
+  );
+
+  // 手动跟随（cookie 由客户端代码转发：start 下发的 state cookie 要带到 callback）
+  const stateCookie = (startRes.headers.get('set-cookie') || '').split(';')[0];
+  const authRes = await fetch(authorizeUrl, { redirect: 'manual' });
+  const callbackUrl = authRes.headers.get('location');
+  const cbRes = await fetch(callbackUrl, { redirect: 'manual', headers: { Cookie: stateCookie } });
+  check(
+    'callback 302 回首页（会话已下发）',
+    cbRes.status === 302 && cbRes.headers.get('location') === '/',
+    `${cbRes.status} ${cbRes.headers.get('location')}`,
+  );
+  const sessionCookie = (cbRes.headers.getSetCookie?.() || []).find((c) => c.startsWith('ci_session=')) || '';
+  check('OAuth 登录下发会话 cookie', sessionCookie.startsWith('ci_session='), sessionCookie.slice(0, 30));
+
+  // 新账号自动注册：gh_octocat_e2e
+  const me = await fetch(`${ob}/api/auth/me`, { headers: { Cookie: sessionCookie } }).then((r) => r.json());
+  check(
+    'OAuth 自动注册账号并登录（gh_ 前缀用户名）',
+    me.user?.username === 'gith_octocat_e2e' && me.user?.displayName === 'Octo E2E',
+    JSON.stringify(me),
+  );
+
+  // 复登：同第三方身份重新走完整流程 → 同一账号（不重复建号）
+  const start2 = await fetch(`${ob}/api/auth/oauth/github/start`, { redirect: 'manual' });
+  const stateCookie2 = (start2.headers.get('set-cookie') || '').split(';')[0];
+  const authorizeUrl2 = start2.headers.get('location');
+  const authRes2 = await fetch(authorizeUrl2, { redirect: 'manual' });
+  const cb2 = await fetch(authRes2.headers.get('location'), {
+    redirect: 'manual',
+    headers: { Cookie: stateCookie2 },
+  });
+  const session2 = (
+    (cb2.headers.getSetCookie?.() || []).find((c) => c.startsWith('ci_session=')) || ''
+  ).split(';')[0];
+  const me2 = await fetch(`${ob}/api/auth/me`, { headers: { Cookie: session2 } }).then((r) => r.json());
+  check(
+    '同第三方身份复登返回同一账号',
+    me2.user?.id === me.user?.id,
+    JSON.stringify({ a: me.user?.id, b: me2.user?.id, me2 }),
+  );
+
+  // CSRF：无/错误 state 的 callback 被拒
+  const csrf = await fetch(`${ob}/api/auth/oauth/github/callback?code=mockcode_x&state=github.999.forged`, {
+    redirect: 'manual',
+  });
+  check('伪造/过期 state 被拒（401）', csrf.status === 401, String(csrf.status));
+
+  // 未配置 provider 404
+  const notConfigured = await fetch(`${ob}/api/auth/oauth/feishu/start`, { redirect: 'manual' });
+  check('未配置的 provider 404', notConfigured.status === 404, String(notConfigured.status));
+
+  // 绑定语义：已有密码账号登录后发起 → 身份绑到现有账号
+  // 绑定语义：已有密码账号登录后发起（state 编码 userId）→ 身份 1002 绑到现有账号
+  const bindRes = await fetch(`${ob}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: USER_A, password: 'newpass123456' }),
+  });
+  const bindJar = (
+    (bindRes.headers.getSetCookie?.() || []).find((c) => c.startsWith('ci_session=')) || ''
+  ).split(';')[0];
+  check(
+    '绑定前置：USER_A 在子服务登录成功',
+    bindRes.status === 200 && bindJar,
+    `${bindRes.status} ${bindJar.slice(0, 24)}`,
+  );
+  const startBind = await fetch(`${ob}/api/auth/oauth/github/start`, {
+    redirect: 'manual',
+    headers: { Cookie: bindJar },
+  });
+  const stateCookie3 = (startBind.headers.get('set-cookie') || '').split(';')[0];
+  const authorizeUrl3 = startBind.headers.get('location') || '';
+  const authRes3 = await fetch(authorizeUrl3, { redirect: 'manual' });
+
+  // 绑定语义：运行内唯一的新身份 → 登录态回调绑定到 USER_A（不新建账号）
+  const bindIdentity = `bind_${Date.now()}`;
+  ghUsers[bindIdentity] = { login: 'octocat_third', name: 'Octo Three' };
+  const codeBind = `mockcode_bind_${++codeSeq}`;
+  oauthCodes.set(codeBind, bindIdentity);
+  const cb3 = await fetch(authRes3.headers.get('location').replace(/code=[^&]+/, `code=${codeBind}`), {
+    redirect: 'manual',
+    headers: { Cookie: `${stateCookie3}; ${bindJar}` },
+  });
+  const session3 = (
+    (cb3.headers.getSetCookie?.() || []).find((c) => c.startsWith('ci_session=')) || ''
+  ).split(';')[0];
+  console.error(
+    'DBG cb3:',
+    cb3.status,
+    'cookies:',
+    (cb3.headers.getSetCookie?.() || []).map((c) => c.slice(0, 22)).join('|'),
+    'body:',
+    await cb3
+      .clone()
+      .text()
+      .then((t) => t.slice(0, 90)),
+    'jar:',
+    bindJar.slice(0, 24),
+    'state:',
+    stateCookie3.slice(0, 40),
+  );
+  const me3 = await fetch(`${ob}/api/auth/me`, { headers: { Cookie: session3 } }).then((r) => r.json());
+  check(
+    '登录态下回调 = 全新身份绑定到现有账号（不新建）',
+    me3.user?.username === USER_A && me3.user?.id !== me.user?.id,
+    JSON.stringify(me3),
+  );
+
+  // 冲突语义：新身份先经 B 的完整 OAuth 自动注册（身份→B），再用 A 的登录态回调同身份 → 409 不静默切号
+  const conflictIdentity = `conflict_${Date.now()}`;
+  ghUsers[conflictIdentity] = { login: 'octocat_b', name: 'Octo B' };
+  const startB = await fetch(`${ob}/api/auth/oauth/github/start`, { redirect: 'manual' });
+  const stateCookieB = (startB.headers.get('set-cookie') || '').split(';')[0];
+  const authResB = await fetch(startB.headers.get('location'), { redirect: 'manual' });
+  const codeB = `mockcode_b_${++codeSeq}`;
+  oauthCodes.set(codeB, conflictIdentity);
+  const cbB = await fetch(authResB.headers.get('location').replace(/code=[^&]+/, `code=${codeB}`), {
+    redirect: 'manual',
+    headers: { Cookie: stateCookieB },
+  });
+  check('B 的完整 OAuth 流程自动注册并登录', cbB.status === 302, String(cbB.status));
+
+  // A 的登录态（state uid=A）回调已属于 B 的身份 → 409
+  const codeConflict = `mockcode_conflict_${++codeSeq}`;
+  oauthCodes.set(codeConflict, conflictIdentity);
+  const authRes4 = await fetch(authorizeUrl3, { redirect: 'manual' });
+  const cb4 = await fetch(authRes4.headers.get('location').replace(/code=[^&]+/, `code=${codeConflict}`), {
+    redirect: 'manual',
+    headers: { Cookie: `${stateCookie3}; ${bindJar}` },
+  });
+  check('已绑定他人的身份在登录态回调返回 409（不静默切号）', cb4.status === 409, String(cb4.status));
+
+  mockProvider.close();
+  oauthSrv.kill();
+
   console.log(`\n=====================================`);
   console.log(`  通过 ${pass} 项，失败 ${fail} 项`);
   console.log(`=====================================\n`);

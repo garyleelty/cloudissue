@@ -1396,6 +1396,59 @@ export function createBoardServer({ actorId: boundActorId = null } = {}) {
   );
 
   // ------------------------------------------------------------------
+  // OAuth 身份绑定（HTTP 层 OAuth 登录的存储面；查询/写入由 HTTP 层编排）
+  // ------------------------------------------------------------------
+
+  // 7.24) 按 第三方身份 查绑定账号（登录用）；未绑定返回 null
+  server.registerTool(
+    'oauth_identity_find',
+    {
+      description: '按第三方身份（provider + provider_user_id）查找绑定的本站账号；未绑定返回 null',
+      inputSchema: {
+        provider: z.string().min(1).max(32),
+        providerUserId: z.string().min(1).max(128),
+      },
+    },
+    async (args) => {
+      const [[row]] = await query(
+        `SELECT u.id, u.username, u.display_name, u.token_version, u.api_token, u.password_hash
+           FROM oauth_identities o JOIN users u ON u.id = o.user_id
+          WHERE o.provider = ? AND o.provider_user_id = ?`,
+        [args.provider, args.providerUserId],
+      );
+      return ok({ user: row ? shapeUser(row) : null });
+    },
+  );
+
+  // 7.25) 绑定第三方身份到账号（幂等；同第三方身份只归一个账号）
+  server.registerTool(
+    'oauth_identity_link',
+    {
+      description: '绑定第三方身份到本站账号（幂等；同身份重复绑定返回已绑定）',
+      inputSchema: {
+        provider: z.string().min(1).max(32),
+        providerUserId: z.string().min(1).max(128),
+        userId: z.number().int().positive(),
+      },
+    },
+    async (args) => {
+      const [[existing]] = await query(
+        'SELECT user_id FROM oauth_identities WHERE provider = ? AND provider_user_id = ?',
+        [args.provider, args.providerUserId],
+      );
+      if (existing) {
+        return ok({ linked: Number(existing.user_id) === args.userId, boundTo: Number(existing.user_id) });
+      }
+      await query('INSERT INTO oauth_identities (provider, provider_user_id, user_id) VALUES (?, ?, ?)', [
+        args.provider,
+        args.providerUserId,
+        args.userId,
+      ]);
+      return ok({ linked: true, boundTo: args.userId });
+    },
+  );
+
+  // ------------------------------------------------------------------
   // Git 提交关联：commit message 含 #编号 即关联到 issue。
   // 来源：MCP 工具（CI/脚本/AI 调用）+ GitHub webhook（HTTP 层解析后落库）。
   // 提取规则前后端共用（shared/git-commit.js），这里只做存储与查询。

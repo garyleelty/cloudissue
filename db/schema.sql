@@ -241,6 +241,22 @@ CREATE TABLE IF NOT EXISTS `issue_commits` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='issue 关联提交';
 
 -- ------------------------------------------------------------
+-- 1.11 OAuth 身份绑定（provider + 第三方用户 id → 本站账号）
+--     一个账号可绑定多个身份；同一第三方身份只能归一个账号
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `oauth_identities` (
+  `id`               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `provider`         VARCHAR(32)     NOT NULL COMMENT 'github / feishu / wecom ...',
+  `provider_user_id` VARCHAR(128)    NOT NULL COMMENT '第三方用户唯一 id',
+  `user_id`          BIGINT UNSIGNED NOT NULL COMMENT '本站账号',
+  `created_at`       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_oauth_identity` (`provider`, `provider_user_id`),
+  KEY `idx_oauth_user` (`user_id`),
+  CONSTRAINT `fk_oauth_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='OAuth 身份绑定';
+
+-- ------------------------------------------------------------
 -- 2. 标签表（一个任务可有多个标签）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `issue_tags` (

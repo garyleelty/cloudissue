@@ -637,6 +637,41 @@ textarea {
 }
 
 /* ==========================================================================
+   登录卡片第三方登录
+   ========================================================================== */
+.oauth-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  color: var(--text-4);
+  font-size: 11.5px;
+}
+.oauth-divider::before,
+.oauth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.oauth-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.oauth-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--text-2);
+}
+.oauth-btn:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
+/* ==========================================================================
    抽屉关联提交
    ========================================================================== */
 .commit-list {
